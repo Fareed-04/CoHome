@@ -164,9 +164,18 @@ Build a unified Smart Home IoT SaaS platform for Pakistani homeowners to manage 
 
 ---
 
+## Changelog
+
+| Date | Fix |
+|------|-----|
+| Mar 2026 | Fixed GoodWe SEMS login: `/v1/` → `/v2/Common/CrossLogin` (v1 was deprecated) |
+| Mar 2026 | Fixed station data endpoint: `/v3/` → `/v2/PowerStation/GetMonitorDetailByPowerstationId` |
+| Mar 2026 | Fixed station list endpoint: `/v1/` → `/v2/PowerStation/GetPowerStationList` |
+| Mar 2026 | Improved error handling: SEMS-specific errors (e.g. "Email or password error") now shown in UI |
+
 ## Next Tasks (Immediate)
-1. Integrate Stripe for subscription payments
-2. Add real-time device state sync via WebSocket
-3. Set up email alerting (SendGrid/Resend)
-4. Build mobile-responsive improvements
-5. Connect to real IoT devices via MQTT broker
+1. User to test GoodWe connection with real credentials
+2. Implement other solar inverter APIs (Huawei FusionSolar, Growatt ShineMonitor)
+3. Add real-time device state sync via WebSocket
+4. Integrate Stripe for subscription payments
+5. Set up email alerting (SendGrid/Resend)

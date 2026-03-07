@@ -120,7 +120,8 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
       setStations(res.data.stations || []);
       if (res.data.stations?.length > 0) setSelectedStation(res.data.stations[0]);
     } catch (err) {
-      setError(err.response?.data?.detail || "Connection failed. Check credentials.");
+      const msg = err.response?.data?.detail || err.message || "Connection failed. Check credentials and try again.";
+      setError(msg);
       setStep(2);
     }
     setTesting(false);
@@ -145,7 +146,8 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
       setStep(4);
       setTimeout(() => { onConnected?.(); onClose(); }, 2500);
     } catch (err) {
-      setError(err.response?.data?.detail || "Failed to save. Please try again.");
+      const msg = err.response?.data?.detail || err.message || "Failed to save. Please try again.";
+      setError(msg);
       setStep(3);
     }
     setSaving(false);

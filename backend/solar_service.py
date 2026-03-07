@@ -56,12 +56,8 @@ class SEMSConnector:
 
     def login(self) -> dict:
         resp = requests.post(
-            f"{self.BASE_URL}/v1/Common/CrossLogin",
-            json={
-                "account": self.username,
-                "pwd": self.password,
-                "agreement": 1,      # FIX 1: T&C checkbox — required or login fails
-            },
+            f"{self.BASE_URL}/v2/Common/CrossLogin",
+            json={"account": self.username, "pwd": self.password},
             headers={"Content-Type": "application/json", "Token": self._base_header()},
             timeout=15
         )
@@ -87,7 +83,7 @@ class SEMSConnector:
         if not self.token:
             self.login()
         resp = requests.post(
-            f"{self.api_domain}/v1/PowerStation/GetPowerStationList",
+            f"{self.api_domain}/v2/PowerStation/GetPowerStationList",
             json={"pageSize": 20, "pageIndex": 1, "orderByIndex": 0},
             headers={"Content-Type": "application/json", "Token": self._auth_header()},
             timeout=15
@@ -95,15 +91,14 @@ class SEMSConnector:
         resp.raise_for_status()
         data = resp.json()
         if str(data.get("code", "")) != "0":
-            raise ValueError(f"Failed to list stations: {data.get('msg', 'Error')}")
+            raise ValueError(f"Failed to list stations: {data.get('msg', data.get('message', 'Unknown error'))}")
         return data.get("data", {}).get("list", [])
 
     def get_station_data(self, station_id: str) -> dict:
         if not self.token:
             self.login()
-        # FIX 2: Use /v3/ endpoint — /v1/ was deprecated by GoodWe
         resp = requests.post(
-            f"{self.api_domain}/v3/PowerStation/GetMonitorDetailByPowerstationId",
+            f"{self.api_domain}/v2/PowerStation/GetMonitorDetailByPowerstationId",
             json={"powerStationId": station_id},
             headers={"Content-Type": "application/json", "Token": self._auth_header()},
             timeout=15
@@ -111,17 +106,7 @@ class SEMSConnector:
         resp.raise_for_status()
         data = resp.json()
         if str(data.get("code", "")) != "0":
-            # Try v1 as fallback if v3 doesn't exist for older accounts
-            resp2 = requests.post(
-                f"{self.api_domain}/v1/PowerStation/GetMonitorDetailByPowerstationId",
-                json={"powerStationId": station_id},
-                headers={"Content-Type": "application/json", "Token": self._auth_header()},
-                timeout=15
-            )
-            resp2.raise_for_status()
-            data = resp2.json()
-            if str(data.get("code", "")) != "0":
-                raise ValueError(f"Failed to get data: {data.get('msg', 'Error')}")
+            raise ValueError(f"Failed to get station data: {data.get('msg', data.get('message', 'Unknown error'))}")
         return self._parse(data.get("data", {}))
 
     def _parse(self, data: dict) -> dict:
@@ -244,10 +229,16 @@ def test_connection_sync(brand: str, credentials: dict) -> dict:
         else:
             raise ValueError(f"Unknown brand: {brand}")
 
-    except requests.exceptions.ConnectionError:
-        raise ValueError("Cannot connect. Check your internet / inverter IP.")
+    except ValueError:
+        raise
+    except requests.exceptions.ConnectionError as e:
+        raise ValueError(f"Cannot connect to {brand} portal. Check your internet connection. ({e})")
     except requests.exceptions.Timeout:
-        raise ValueError("Connection timed out. Verify IP / network access.")
+        raise ValueError(f"Connection timed out connecting to {brand} portal. Check network access.")
+    except requests.exceptions.HTTPError as e:
+        raise ValueError(f"HTTP error from {brand} API: {e.response.status_code} {e.response.text[:200]}")
+    except Exception as e:
+        raise ValueError(f"Unexpected error: {str(e)}")
 
 
 def fetch_solar_live_data(connection_config: dict) -> dict:
