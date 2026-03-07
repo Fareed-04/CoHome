@@ -98,7 +98,19 @@ Build a unified Smart Home IoT SaaS platform for Pakistani homeowners to manage 
 | Mar 2026 | Subscription: get plan, upgrade to pro |
 | Mar 2026 | Solar analytics generator (24h/7d/30d mock data) |
 
-### Frontend Pages
+### What's Been Implemented (continued)
+
+| Date | Feature |
+|------|---------|
+| Mar 2026 | Solar inverter connection wizard (4-step modal) |
+| Mar 2026 | GoodWe SEMS Portal full integration (login → stations → live data) |
+| Mar 2026 | Fronius Local API integration (LAN direct, <100ms) |
+| Mar 2026 | Manual entry mode (any brand) |
+| Mar 2026 | Credential encryption with Fernet AES-256 |
+| Mar 2026 | Background polling every 5 minutes (asyncio) |
+| Mar 2026 | Solar readings stored in MongoDB (solar_readings collection) |
+| Mar 2026 | Live solar dashboard: kW, kWh, PKR savings, grid voltage, temp, PV strings |
+| Mar 2026 | Coming-soon brands: Huawei, Growatt, Sungrow, Solis, SMA, Inverex (credentials saved) |
 | Page | Route | Status |
 |------|-------|--------|
 | Landing | / | ✅ |

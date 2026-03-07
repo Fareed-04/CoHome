@@ -125,7 +125,7 @@ export default function SolarPage() {
               {isConnected && (
                 <span className="text-xs font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-full border border-indigo-100">
                   {BRAND_LABELS[liveData?.connection_brand] || liveData?.connection_brand}
-                  {liveData?.station_name ? ` · ${liveData.station_name}` : ""}
+                  {liveData?.station_name && liveData.station_name !== "Manual Entry" ? ` · ${liveData.station_name}` : ""}
                 </span>
               )}
             </div>
