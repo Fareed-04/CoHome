@@ -1,0 +1,156 @@
+{
+  "brand_identity": {
+    "name": "Cohome",
+    "description": "Unified IoT SaaS for Pakistani Smart Homes",
+    "emotional_tone": "Futuristic yet Approachable, Secure, Efficient, Family-Centric",
+    "visual_style": "Clean Modern, White/Light Base, Vibrant Functional Accents, Glassmorphism",
+    "target_audience": "Tech-savvy Pakistani homeowners, families, early adopters"
+  },
+  "typography": {
+    "headings": {
+      "font_family": "Outfit, sans-serif",
+      "weights": ["500", "600", "700"],
+      "usage": "Use for all page titles, section headers, and widget titles. Tight tracking (-0.02em)."
+    },
+    "body": {
+      "font_family": "DM Sans, sans-serif",
+      "weights": ["400", "500"],
+      "usage": "Use for all paragraphs, labels, and data points. Normal tracking."
+    },
+    "mono": {
+      "font_family": "JetBrains Mono, monospace",
+      "usage": "Use for API keys, device IDs, and raw data logs."
+    }
+  },
+  "colors": {
+    "palette": {
+      "primary": {
+        "DEFAULT": "#4F46E5",
+        "foreground": "#FFFFFF",
+        "50": "#EEF2FF",
+        "100": "#E0E7FF",
+        "500": "#6366F1",
+        "600": "#4F46E5",
+        "700": "#4338CA"
+      },
+      "background": {
+        "DEFAULT": "#F8FAFC",
+        "paper": "#FFFFFF",
+        "subtle": "#F1F5F9"
+      },
+      "foreground": {
+        "DEFAULT": "#0F172A",
+        "muted": "#64748B",
+        "subtle": "#94A3B8"
+      },
+      "functional": {
+        "solar": "#F59E0B", 
+        "security": "#E11D48",
+        "climate": "#0EA5E9",
+        "success": "#10B981",
+        "warning": "#F97316"
+      }
+    },
+    "gradients": {
+      "solar_card": "linear-gradient(135deg, #FFFBEB 0%, #FFFFFF 100%)",
+      "security_card": "linear-gradient(135deg, #FFF1F2 0%, #FFFFFF 100%)",
+      "climate_card": "linear-gradient(135deg, #F0F9FF 0%, #FFFFFF 100%)",
+      "hero_glow": "radial-gradient(circle at 50% 50%, rgba(79, 70, 229, 0.15) 0%, rgba(255, 255, 255, 0) 70%)"
+    }
+  },
+  "layout_strategies": {
+    "spacing_scale": {
+      "base": "0.25rem",
+      "container_padding": "p-6 md:p-8 lg:p-12",
+      "section_gap": "gap-8 md:gap-12",
+      "widget_gap": "gap-4 md:gap-6"
+    },
+    "grid_systems": {
+      "dashboard_bento": "grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6 auto-rows-[minmax(180px,auto)]",
+      "marketing_tetris": "grid grid-cols-1 md:grid-cols-12 gap-8"
+    },
+    "containers": {
+      "card_style": "bg-white/80 backdrop-blur-md border border-slate-200/60 shadow-sm hover:shadow-md transition-all duration-300 rounded-2xl",
+      "glass_panel": "bg-white/60 backdrop-blur-xl border border-white/40 shadow-lg rounded-3xl"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-primary text-white rounded-full px-8 py-3 font-medium hover:shadow-lg hover:shadow-primary/25 transition-all active:scale-95",
+      "secondary": "bg-white text-slate-900 border border-slate-200 rounded-full px-6 py-3 font-medium hover:bg-slate-50 transition-all active:scale-95",
+      "ghost": "text-slate-600 hover:text-slate-900 hover:bg-slate-100/50 rounded-lg px-4 py-2 transition-colors"
+    },
+    "cards": {
+      "dashboard_widget": "relative overflow-hidden rounded-3xl border border-slate-100 bg-white p-6 shadow-sm hover:shadow-md transition-all group",
+      "feature_card": "flex flex-col gap-4 p-8 rounded-3xl bg-slate-50 border border-slate-100 hover:border-primary/20 transition-colors"
+    },
+    "inputs": {
+      "default": "h-12 rounded-xl border-slate-200 bg-white px-4 text-slate-900 focus:border-primary focus:ring-2 focus:ring-primary/20 transition-all",
+      "search": "h-10 rounded-full border-transparent bg-slate-100 pl-10 pr-4 focus:bg-white focus:border-primary/50 focus:ring-0 transition-all"
+    }
+  },
+  "visual_enhancers": {
+    "shadows": {
+      "soft": "0 4px 20px -2px rgba(15, 23, 42, 0.05)",
+      "glow": "0 0 20px -5px var(--glow-color)"
+    },
+    "borders": {
+      "subtle": "1px solid rgba(226, 232, 240, 0.8)",
+      "highlight": "1px solid rgba(79, 70, 229, 0.3)"
+    },
+    "radius": {
+      "default": "0.75rem",
+      "large": "1.5rem",
+      "pill": "9999px"
+    }
+  },
+  "motion": {
+    "transitions": "transition-all duration-300 ease-out",
+    "hover_effects": "hover:-translate-y-1 hover:shadow-lg",
+    "page_transition": {
+      "initial": { "opacity": 0, "y": 10 },
+      "animate": { "opacity": 1, "y": 0 },
+      "exit": { "opacity": 0, "y": -10 }
+    }
+  },
+  "image_urls": {
+    "hero_solar_home": {
+      "url": "https://images.unsplash.com/photo-1687865014576-9ae3570f550a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzV8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBzbWFydCUyMGhvbWUlMjBleHRlcmlvciUyMHNvbGFyJTIwcGFuZWxzfGVufDB8fHx8MTc3MjkwMzE0NXww&ixlib=rb-4.1.0&q=85",
+      "alt": "Modern home with solar panels",
+      "usage": "Landing page hero section background or side image"
+    },
+    "family_lifestyle": {
+      "url": "https://images.unsplash.com/photo-1640622302099-f10b18de7b16?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Njl8MHwxfHNlYXJjaHwzfHxoYXBweSUyMGZhbWlseSUyMHVzaW5nJTIwdGFibGV0JTIwY291Y2h8ZW58MHx8fHwxNzcyOTAzMTYwfDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Family using smart home tablet",
+      "usage": "Features section, family access page"
+    },
+    "security_camera": {
+      "url": "https://images.unsplash.com/photo-1759771618528-8179a49ae81a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2OTV8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBzZWN1cml0eSUyMGNhbWVyYSUyMG9uJTIwd2FsbHxlbnwwfHx8fDE3NzI5MDMxNTh8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "Modern security camera",
+      "usage": "Security features section"
+    }
+  },
+  "icon_libraries": {
+    "primary": "lucide-react",
+    "secondary": "@heroicons/react",
+    "special": "Use distinct icons for devices: Sun (Solar), Shield (Security), Thermometer (Geyser), Key (Door)"
+  },
+  "chart_libraries": {
+    "primary": "recharts",
+    "usage": "Use AreaChart for solar generation, BarChart for energy consumption. Style with gradient fills."
+  },
+  "universal_guidelines": [
+    "Always use 'Outfit' font for headings and 'DM Sans' for body text.",
+    "Do not use pure black (#000000). Use Slate-900 (#0F172A) instead.",
+    "Use 2x-3x more padding than standard. Minimum p-6 for cards.",
+    "Buttons must have a 'pill' shape (rounded-full) for a modern consumer app feel.",
+    "Glassmorphism (backdrop-blur) is key for the 'Futuristic' feel. Use it on sticky headers and floating widgets.",
+    "Every interactive element must have a hover state.",
+    "Use skeleton loaders for data fetching states.",
+    "Ensure high contrast for text (Slate-600 minimum for body text).",
+    "Solar graphs should use Amber/Orange gradients. Climate graphs use Blue/Cyan gradients.",
+    "Security alerts must be Red/Rose but not alarming - use soft backgrounds with bold text.",
+    "For the 'Pakistani context', ensure the 'Family' and 'Multi-home' features are prominent.",
+    "Data-testid attributes are MANDATORY for all interactive elements."
+  ]
+}
