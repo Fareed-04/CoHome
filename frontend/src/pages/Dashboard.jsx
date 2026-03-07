@@ -81,11 +81,10 @@ export default function Dashboard() {
   const load = useCallback(async () => {
     if (!selectedHomeId) { setLoading(false); return; }
     try {
-      const [statsRes, devicesRes, alertsRes, analyticsRes] = await Promise.all([
+      const [statsRes, devicesRes, alertsRes] = await Promise.all([
         axios.get(`${API}/homes/${selectedHomeId}/stats`, { withCredentials: true }),
         axios.get(`${API}/homes/${selectedHomeId}/devices`, { withCredentials: true }),
         axios.get(`${API}/homes/${selectedHomeId}/alerts`, { withCredentials: true }),
-        axios.get(`${API}/devices`, { withCredentials: true }).catch(() => ({ data: [] }))
       ]);
       setStats(statsRes.data);
       setDevices(devicesRes.data);
