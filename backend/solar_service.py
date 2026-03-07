@@ -145,6 +145,7 @@ class SEMSConnector:
             "grid_voltage_v": fval(inv.get("vac1")),
             "grid_frequency_hz": fval(inv.get("fac1")),
             "temperature_c": fval(inv.get("tempperature") or inv.get("temperature")),
+            "capacity_kw": fval(info.get("capacity")),
             "pv_strings": [
                 {"string": 1, "voltage_v": vpv1, "current_a": ipv1, "power_w": vpv1 * ipv1},
                 {"string": 2, "voltage_v": vpv2, "current_a": ipv2, "power_w": vpv2 * ipv2},

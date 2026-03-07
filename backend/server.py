@@ -809,6 +809,9 @@ async def get_solar_live(device_id: str, current_user: dict = Depends(get_curren
         "temperature_c": s.get("temperature_c", 0),
         "pv_strings": s.get("pv_strings", []),
         "monthly_savings_pkr": s.get("monthly_savings_pkr", 0),
+        "capacity_kw": s.get("capacity_kw"),
+        "inverter_model": s.get("inverter_model"),
+        "inverter_sn": s.get("inverter_sn"),
         "last_sync": s.get("last_sync"),
         "last_sync_error": s.get("last_sync_error"),
         "electricity_rate_pkr": config.get("electricity_rate_pkr", 35.0),
@@ -865,6 +868,9 @@ async def _apply_solar_data(device_id: str, config: dict, data: dict):
             "settings.monthly_savings_pkr": monthly_savings,
             "settings.last_sync": datetime.now(timezone.utc).isoformat(),
             "settings.last_sync_error": None,
+            "settings.inverter_model": data.get("model"),
+            "settings.inverter_sn": data.get("inverter_sn"),
+            **( {"settings.capacity_kw": data["capacity_kw"]} if data.get("capacity_kw") else {} ),
             "status": "online" if data.get("is_online") else "offline",
         }}
     )

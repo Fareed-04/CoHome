@@ -120,7 +120,11 @@ export default function SolarPage() {
           <div>
             <h1 className="text-3xl font-bold text-slate-900" style={{ fontFamily: "Outfit, sans-serif" }}>Solar Monitor</h1>
             <div className="flex items-center gap-3 mt-2 flex-wrap">
-              <p className="text-slate-500 text-sm">{device?.name} · {s.panel_count} panels · {s.capacity_kw} kW</p>
+              <p className="text-slate-500 text-sm">
+                {device?.name}
+                {liveData?.capacity_kw ? ` · ${liveData.capacity_kw} kW system` : ""}
+                {liveData?.inverter_model ? ` · ${liveData.inverter_model}` : ""}
+              </p>
               {isConnected && <LiveBadge lastSync={liveData?.last_sync} error={liveData?.last_sync_error} />}
               {isConnected && (
                 <span className="text-xs font-medium text-indigo-600 bg-indigo-50 px-3 py-1.5 rounded-full border border-indigo-100">
@@ -243,10 +247,10 @@ export default function SolarPage() {
         {!isConnected && (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             {[
-              { icon: Sun, label: "Today's Generation", value: `${s.today_generation_kwh || 0} kWh`, color: "bg-amber-50 text-amber-600" },
-              { icon: Battery, label: "Battery Level", value: `${s.battery_percentage || 0}%`, color: "bg-green-50 text-green-600" },
-              { icon: Zap, label: "Capacity", value: `${s.capacity_kw || 0} kW`, color: "bg-indigo-50 text-indigo-600" },
-              { icon: TrendingUp, label: "Est. Monthly Save", value: `PKR ${s.monthly_savings_pkr || 0}`, color: "bg-rose-50 text-rose-600" },
+              { icon: Sun, label: "Today's Generation", value: "— kWh", color: "bg-amber-50 text-amber-600" },
+              { icon: Battery, label: "Battery Level", value: "—", color: "bg-green-50 text-green-600" },
+              { icon: Zap, label: "System Capacity", value: "— kW", color: "bg-indigo-50 text-indigo-600" },
+              { icon: TrendingUp, label: "Est. Monthly Save", value: "— PKR", color: "bg-rose-50 text-rose-600" },
             ].map(({ icon: Icon, label, value, color }, i) => (
               <div key={label} className="bg-white rounded-3xl border border-slate-100 p-6 shadow-soft animate-fade-in-up opacity-70" style={{ animationDelay: `${i * 0.06}s` }}>
                 <div className={`w-10 h-10 ${color} rounded-2xl flex items-center justify-center mb-3`}><Icon size={18} /></div>
