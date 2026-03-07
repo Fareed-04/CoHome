@@ -74,10 +74,11 @@ class SEMSConnector:
         self.token = d.get("token")
         self.uid = d.get("uid")
         self.timestamp = d.get("timestamp")
-        # Always use semsportal.com for all subsequent calls — the `api` field
-        # from CrossLogin can point to regional domains (e.g. globalapi.sems.com.cn)
-        # that don't support the /v2/PowerStation/ endpoints we need.
-        self.api_domain = self.BASE_URL
+        # Use the regional API domain returned by login (e.g. globalapi.sems.com.cn/api).
+        # Ensure it ends without a trailing slash for clean URL construction.
+        raw_api = d.get("api") or self.BASE_URL
+        self.api_domain = raw_api.rstrip("/")
+        logger.info(f"SEMS CrossLogin OK — api_domain: {self.api_domain}")
         return d
 
     def get_stations(self) -> list:
@@ -187,23 +188,27 @@ def test_connection_sync(brand: str, credentials: dict) -> dict:
         if brand == "goodwe":
             connector = SEMSConnector(credentials["username"], credentials["password"])
             connector.login()
-            logger.info(f"SEMS login OK. api_domain={connector.api_domain}")
-            stations = connector.get_stations()
-            logger.info(f"SEMS stations response: {stations[:2] if stations else 'EMPTY'}")
-            return {
-                "success": True,
-                "message": f"Connected to SEMS! Found {len(stations)} station(s).",
-                "stations": [
-                    {
-                        "id": (s.get("id") or s.get("powerstation_id") or s.get("stationId")
-                               or s.get("Id") or s.get("PowerStationId") or ""),
-                        "name": (s.get("stationname") or s.get("name") or s.get("StationName", "Station")),
-                        "capacity": s.get("capacity", 0),
-                        "address": s.get("address", ""),
-                    }
-                    for s in stations[:5]
-                ],
-            }
+            station_id = credentials.get("station_id", "").strip()
+
+            if station_id:
+                # Verify the station_id works by fetching its data
+                station_data = connector.get_station_data(station_id)
+                station_name = station_data.get("station_name", "My Station")
+                power_kw = station_data.get("current_power_w", 0) / 1000
+                return {
+                    "success": True,
+                    "message": f"Connected! Station '{station_name}' found. Current output: {power_kw:.2f} kW",
+                    "stations": [{"id": station_id, "name": station_name, "capacity": 0}],
+                }
+            else:
+                # No station_id — login worked but we can't auto-list stations
+                # (GetPowerStationList requires enterprise/partner API access)
+                return {
+                    "success": True,
+                    "needs_station_id": True,
+                    "message": "Login successful! To complete setup, enter your Power Station ID below.",
+                    "stations": [],
+                }
 
         elif brand == "fronius":
             connector = FroniusConnector(credentials["inverter_ip"])

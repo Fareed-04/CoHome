@@ -170,8 +170,9 @@ Build a unified Smart Home IoT SaaS platform for Pakistani homeowners to manage 
 |------|-----|
 | Mar 2026 | Fixed GoodWe SEMS login: `/v1/` → `/v2/Common/CrossLogin` (v1 was deprecated) |
 | Mar 2026 | Fixed station data endpoint: `/v3/` → `/v2/PowerStation/GetMonitorDetailByPowerstationId` |
-| Mar 2026 | Fixed station list endpoint: `/v1/` → `/v2/PowerStation/GetPowerStationList` |
-| Mar 2026 | Improved error handling: SEMS-specific errors (e.g. "Email or password error") now shown in UI |
+| Mar 2026 | Removed `GetPowerStationList` call (restricted to enterprise NDA accounts only) |
+| Mar 2026 | New GoodWe flow: login verify → show station ID instructions → verify station → save |
+| Mar 2026 | Improved error handling: SEMS-specific errors shown in UI |
 
 ## Next Tasks (Immediate)
 1. User to test GoodWe connection with real credentials

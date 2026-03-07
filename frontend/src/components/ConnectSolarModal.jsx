@@ -10,8 +10,8 @@ const BRANDS = [
     badge: "Your Setup", badgeColor: "bg-amber-100 text-amber-700",
     highlight: true, logo: "⚡",
     help: "Uses your SEMS Portal account at semsportal.com. Polls every 5 minutes automatically.",
-    fields: ["username", "password", "station_id_optional"],
-    stationHelp: "Found in SEMS Portal URL: semsportal.com/PowerStation/PowerStatusSnMin/{YOUR-ID}",
+    fields: ["username", "password", "station_id_required"],
+    stationHelp: "Log into semsportal.com → click your plant → copy the UUID from the URL: semsportal.com/PowerStation/PowerStatusSnMin/{YOUR-ID-HERE}",
   },
   {
     id: "fronius", name: "Fronius", platform: "Local API", type: "local",
@@ -119,6 +119,10 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
       setTestResult(res.data);
       setStations(res.data.stations || []);
       if (res.data.stations?.length > 0) setSelectedStation(res.data.stations[0]);
+      // If backend says needs_station_id — go back to credentials form to let user enter it
+      if (res.data.needs_station_id) {
+        setStep(2);
+      }
     } catch (err) {
       const msg = err.response?.data?.detail || err.message || "Connection failed. Check credentials and try again.";
       setError(msg);
@@ -198,16 +202,29 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
           {/* Step 2: Credentials */}
           {step === 2 && selectedBrand && (
             <div className="space-y-5">
-              {/* Help banner */}
-              <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 flex gap-3">
-                <Info size={18} className="text-indigo-500 flex-shrink-0 mt-0.5" />
-                <p className="text-sm text-indigo-700">{selectedBrand.help}</p>
-              </div>
+              {/* Login success + needs station ID banner */}
+              {testResult?.needs_station_id && (
+                <div className="bg-green-50 border border-green-200 rounded-2xl p-4 flex gap-3">
+                  <CheckCircle size={18} className="text-green-600 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-semibold text-green-800">Login verified!</p>
+                    <p className="text-sm text-green-700 mt-0.5">{testResult.message}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Help banner (hide if login verified) */}
+              {!testResult?.needs_station_id && (
+                <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 flex gap-3">
+                  <Info size={18} className="text-indigo-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-indigo-700">{selectedBrand.help}</p>
+                </div>
+              )}
 
               {error && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl p-3 text-sm">{error}</div>}
 
-              {/* Cloud credentials */}
-              {selectedBrand.fields.includes("username") && (
+              {/* Cloud credentials — hide once login is verified */}
+              {selectedBrand.fields.includes("username") && !testResult?.needs_station_id && (
                 <>
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -228,7 +245,27 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
                 </>
               )}
 
-              {/* Optional station ID */}
+              {/* Required station ID for GoodWe */}
+              {selectedBrand.fields.includes("station_id_required") && (
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                    Power Station ID
+                    {!testResult?.needs_station_id && <span className="text-slate-400 font-normal ml-1">(enter after verifying login)</span>}
+                  </label>
+                  <input data-testid="solar-station-id" value={form.station_id}
+                    onChange={e => setForm({ ...form, station_id: e.target.value })}
+                    placeholder="e.g. d0eac052-1234-5678-abcd-123456789012"
+                    className={inputClass} />
+                  {selectedBrand.stationHelp && (
+                    <div className="mt-2 bg-amber-50 border border-amber-100 rounded-xl p-3">
+                      <p className="text-xs text-amber-700 font-medium mb-1">How to find your Station ID:</p>
+                      <p className="text-xs text-amber-600">{selectedBrand.stationHelp}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Optional station ID (other brands) */}
               {selectedBrand.fields.includes("station_id_optional") && (
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -387,9 +424,16 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
             {step === 2 && (
               <button data-testid="test-connection-btn"
                 onClick={handleTest}
-                disabled={(!form.username && !form.inverter_ip && selectedBrand?.id !== "manual" && selectedBrand?.id !== "inverex")}
+                disabled={
+                  // If login verified, require station_id before re-testing
+                  (testResult?.needs_station_id && !form.station_id) ||
+                  // Otherwise require at least username or IP
+                  (!testResult?.needs_station_id && !form.username && !form.inverter_ip
+                    && selectedBrand?.id !== "manual" && selectedBrand?.id !== "inverex")
+                }
                 className="flex items-center gap-2 px-8 py-3 bg-indigo-600 text-white font-semibold rounded-full hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-40 text-sm">
-                <Wifi size={16} /> Test Connection
+                <Wifi size={16} />
+                {testResult?.needs_station_id ? "Verify Station ID" : "Test Connection"}
               </button>
             )}
 
