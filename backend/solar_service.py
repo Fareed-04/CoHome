@@ -120,19 +120,31 @@ class SEMSConnector:
         inv = inv_list[0] if isinstance(inv_list, list) and inv_list else (inv_list if isinstance(inv_list, dict) else {})
         info = data.get("info", {})
 
-        vpv1 = float(inv.get("vpv1", 0) or 0)
-        ipv1 = float(inv.get("ipv1", 0) or 0)
-        vpv2 = float(inv.get("vpv2", 0) or 0)
-        ipv2 = float(inv.get("ipv2", 0) or 0)
+        def fval(v, default=0.0):
+            """Convert SEMS value to float — handles None, '', '0W', '230.5V', etc."""
+            if v is None or v == "":
+                return float(default)
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                # Strip trailing non-numeric chars (units like W, V, Hz, kWh, %)
+                import re
+                m = re.match(r"^-?[\d.]+", str(v).strip())
+                return float(m.group()) if m else float(default)
+
+        vpv1 = fval(inv.get("vpv1"))
+        ipv1 = fval(inv.get("ipv1"))
+        vpv2 = fval(inv.get("vpv2"))
+        ipv2 = fval(inv.get("ipv2"))
 
         return {
             "is_online": info.get("status", 0) == 1,
-            "current_power_w": float(inv.get("output_power", 0) or 0),
-            "today_energy_kwh": float(inv.get("eday", 0) or 0),
-            "total_energy_kwh": float(inv.get("etotal", 0) or 0),
-            "grid_voltage_v": float(inv.get("vac1", 0) or 0),
-            "grid_frequency_hz": float(inv.get("fac1", 0) or 0),
-            "temperature_c": float(inv.get("tempperature", 0) or 0),
+            "current_power_w": fval(inv.get("output_power") or inv.get("pac")),
+            "today_energy_kwh": fval(inv.get("eday")),
+            "total_energy_kwh": fval(inv.get("etotal")),
+            "grid_voltage_v": fval(inv.get("vac1")),
+            "grid_frequency_hz": fval(inv.get("fac1")),
+            "temperature_c": fval(inv.get("tempperature") or inv.get("temperature")),
             "pv_strings": [
                 {"string": 1, "voltage_v": vpv1, "current_a": ipv1, "power_w": vpv1 * ipv1},
                 {"string": 2, "voltage_v": vpv2, "current_a": ipv2, "power_w": vpv2 * ipv2},
@@ -142,7 +154,7 @@ class SEMSConnector:
             "rssi": inv.get("rssi"),
             "last_update": inv.get("last_update_time"),
             "station_name": info.get("stationname", "My Station"),
-            "total_hours": float(inv.get("htotal", 0) or 0),
+            "total_hours": fval(inv.get("htotal")),
         }
 
 
