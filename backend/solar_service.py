@@ -74,9 +74,10 @@ class SEMSConnector:
         self.token = d.get("token")
         self.uid = d.get("uid")
         self.timestamp = d.get("timestamp")
-        # FIX 3: strip trailing slash to avoid double-slash in URLs
-        raw_api = d.get("api", "https://www.semsportal.com/api")
-        self.api_domain = raw_api.rstrip("/")
+        # Always use semsportal.com for all subsequent calls — the `api` field
+        # from CrossLogin can point to regional domains (e.g. globalapi.sems.com.cn)
+        # that don't support the /v2/PowerStation/ endpoints we need.
+        self.api_domain = self.BASE_URL
         return d
 
     def get_stations(self) -> list:
@@ -92,7 +93,11 @@ class SEMSConnector:
         data = resp.json()
         if str(data.get("code", "")) != "0":
             raise ValueError(f"Failed to list stations: {data.get('msg', data.get('message', 'Unknown error'))}")
-        return data.get("data", {}).get("list", [])
+        raw = data.get("data", {})
+        # API can return {"data": {"list": [...]}} or {"data": [...]} depending on account type
+        if isinstance(raw, list):
+            return raw
+        return raw.get("list", raw.get("datas", []))
 
     def get_station_data(self, station_id: str) -> dict:
         if not self.token:
@@ -182,14 +187,17 @@ def test_connection_sync(brand: str, credentials: dict) -> dict:
         if brand == "goodwe":
             connector = SEMSConnector(credentials["username"], credentials["password"])
             connector.login()
+            logger.info(f"SEMS login OK. api_domain={connector.api_domain}")
             stations = connector.get_stations()
+            logger.info(f"SEMS stations response: {stations[:2] if stations else 'EMPTY'}")
             return {
                 "success": True,
                 "message": f"Connected to SEMS! Found {len(stations)} station(s).",
                 "stations": [
                     {
-                        "id": s.get("id") or s.get("powerstation_id") or s.get("stationId", ""),
-                        "name": s.get("stationname") or s.get("name", "Station"),
+                        "id": (s.get("id") or s.get("powerstation_id") or s.get("stationId")
+                               or s.get("Id") or s.get("PowerStationId") or ""),
+                        "name": (s.get("stationname") or s.get("name") or s.get("StationName", "Station")),
                         "capacity": s.get("capacity", 0),
                         "address": s.get("address", ""),
                     }
