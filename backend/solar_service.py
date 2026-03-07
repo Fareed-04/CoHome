@@ -57,20 +57,31 @@ class SEMSConnector:
     def login(self) -> dict:
         resp = requests.post(
             f"{self.BASE_URL}/v1/Common/CrossLogin",
-            json={"account": self.username, "pwd": self.password},
+            json={
+                "account": self.username,
+                "pwd": self.password,
+                "agreement": 1,      # FIX 1: T&C checkbox — required or login fails
+            },
             headers={"Content-Type": "application/json", "Token": self._base_header()},
             timeout=15
         )
         resp.raise_for_status()
         data = resp.json()
-        if data.get("code") != 0:
-            raise ValueError(f"SEMS login failed: {data.get('msg', 'Invalid credentials')}")
 
-        self.token = data["data"]["token"]
-        self.uid = data["data"]["uid"]
-        self.timestamp = data["data"]["timestamp"]
-        self.api_domain = data["data"]["api"]
-        return data["data"]
+        # FIX 4: SEMS returns code as int 0 OR string "0" depending on region/version
+        code = data.get("code")
+        if str(code) != "0":
+            msg = data.get("msg") or data.get("message") or "Login failed"
+            raise ValueError(f"SEMS login error (code {code}): {msg}")
+
+        d = data.get("data") or {}
+        self.token = d.get("token")
+        self.uid = d.get("uid")
+        self.timestamp = d.get("timestamp")
+        # FIX 3: strip trailing slash to avoid double-slash in URLs
+        raw_api = d.get("api", "https://www.semsportal.com/api")
+        self.api_domain = raw_api.rstrip("/")
+        return d
 
     def get_stations(self) -> list:
         if not self.token:
@@ -83,23 +94,34 @@ class SEMSConnector:
         )
         resp.raise_for_status()
         data = resp.json()
-        if data.get("code") != 0:
+        if str(data.get("code", "")) != "0":
             raise ValueError(f"Failed to list stations: {data.get('msg', 'Error')}")
         return data.get("data", {}).get("list", [])
 
     def get_station_data(self, station_id: str) -> dict:
         if not self.token:
             self.login()
+        # FIX 2: Use /v3/ endpoint — /v1/ was deprecated by GoodWe
         resp = requests.post(
-            f"{self.api_domain}/v1/PowerStation/GetMonitorDetailByPowerstationId",
+            f"{self.api_domain}/v3/PowerStation/GetMonitorDetailByPowerstationId",
             json={"powerStationId": station_id},
             headers={"Content-Type": "application/json", "Token": self._auth_header()},
             timeout=15
         )
         resp.raise_for_status()
         data = resp.json()
-        if data.get("code") != 0:
-            raise ValueError(f"Failed to get data: {data.get('msg', 'Error')}")
+        if str(data.get("code", "")) != "0":
+            # Try v1 as fallback if v3 doesn't exist for older accounts
+            resp2 = requests.post(
+                f"{self.api_domain}/v1/PowerStation/GetMonitorDetailByPowerstationId",
+                json={"powerStationId": station_id},
+                headers={"Content-Type": "application/json", "Token": self._auth_header()},
+                timeout=15
+            )
+            resp2.raise_for_status()
+            data = resp2.json()
+            if str(data.get("code", "")) != "0":
+                raise ValueError(f"Failed to get data: {data.get('msg', 'Error')}")
         return self._parse(data.get("data", {}))
 
     def _parse(self, data: dict) -> dict:
