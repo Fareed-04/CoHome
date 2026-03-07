@@ -9,7 +9,6 @@ import secrets
 import uuid
 import bcrypt
 import requests as req_lib
-import random
 import asyncio
 from pathlib import Path
 from pydantic import BaseModel, Field
@@ -101,40 +100,6 @@ async def get_user_home_ids(user_id: str) -> List[str]:
         {"_id": 0, "home_id": 1}
     ).to_list(100)
     return [h["home_id"] for h in homes]
-
-def generate_solar_analytics(period: str) -> List[dict]:
-    now = datetime.now(timezone.utc)
-    data = []
-    if period == "24h":
-        for i in range(24):
-            t = now - timedelta(hours=23 - i)
-            hour = t.hour
-            if 6 <= hour <= 18:
-                generation = max(0, 5.0 * (1 - ((hour - 12) / 7) ** 2) + random.uniform(-0.3, 0.3))
-            else:
-                generation = 0
-            data.append({
-                "time": f"{hour:02d}:00",
-                "generation": round(generation, 2),
-                "consumption": round(1.8 + random.uniform(-0.4, 0.6), 2)
-            })
-    elif period == "7d":
-        for i in range(7):
-            t = now - timedelta(days=6 - i)
-            data.append({
-                "date": t.strftime("%a"),
-                "generation": round(random.uniform(18, 28), 1),
-                "consumption": round(random.uniform(12, 20), 1)
-            })
-    elif period == "30d":
-        for i in range(30):
-            t = now - timedelta(days=29 - i)
-            data.append({
-                "date": t.strftime("%d %b"),
-                "generation": round(random.uniform(14, 30), 1),
-                "consumption": round(random.uniform(10, 22), 1)
-            })
-    return data
 
 async def seed_home_devices(home_id: str, owner_id: str):
     now = datetime.now(timezone.utc).isoformat()
@@ -467,18 +432,105 @@ async def get_device_analytics(device_id: str, period: str = "24h", current_user
         raise HTTPException(status_code=404, detail="Device not found")
     if device["type"] != "solar":
         raise HTTPException(status_code=400, detail="Analytics only available for solar devices")
-    data = generate_solar_analytics(period)
-    total_generation = sum(d.get("generation", 0) for d in data)
-    total_consumption = sum(d.get("consumption", 0) for d in data)
+
+    home_ids = await get_user_home_ids(current_user["user_id"])
+    if device["home_id"] not in home_ids:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    now = datetime.now(timezone.utc)
+    is_connected = bool(device.get("settings", {}).get("connection_config"))
+
+    if period == "24h":
+        since = (now - timedelta(hours=24)).isoformat()
+        readings = await db.solar_readings.find(
+            {"device_id": device_id, "timestamp": {"$gte": since}},
+            {"_id": 0, "timestamp": 1, "current_power_w": 1}
+        ).sort("timestamp", 1).to_list(500)
+
+        # Build hour buckets — average power per hour
+        buckets: dict = {}
+        for r in readings:
+            try:
+                ts = datetime.fromisoformat(r["timestamp"].replace("Z", "+00:00"))
+                key = f"{ts.hour:02d}:00"
+                pw = float(r.get("current_power_w") or 0)
+                if key not in buckets:
+                    buckets[key] = {"sum": 0, "count": 0}
+                buckets[key]["sum"] += pw
+                buckets[key]["count"] += 1
+            except Exception:
+                continue
+
+        data = []
+        for h in range(24):
+            key = f"{h:02d}:00"
+            avg_w = buckets[key]["sum"] / buckets[key]["count"] if key in buckets and buckets[key]["count"] > 0 else None
+            data.append({
+                "time": key,
+                "generation_kw": round(avg_w / 1000, 3) if avg_w is not None else None,
+                "has_data": avg_w is not None,
+            })
+
+    elif period == "7d":
+        since = (now - timedelta(days=7)).isoformat()
+        readings = await db.solar_readings.find(
+            {"device_id": device_id, "timestamp": {"$gte": since}},
+            {"_id": 0, "timestamp": 1, "today_energy_kwh": 1}
+        ).sort("timestamp", 1).to_list(2000)
+
+        # Per day: take the MAX today_energy_kwh reading = end-of-day total
+        buckets = {}
+        for r in readings:
+            try:
+                ts = datetime.fromisoformat(r["timestamp"].replace("Z", "+00:00"))
+                key = ts.strftime("%a %d")
+                val = float(r.get("today_energy_kwh") or 0)
+                buckets[key] = max(buckets.get(key, 0), val)
+            except Exception:
+                continue
+
+        data = []
+        for i in range(7):
+            day = now - timedelta(days=6 - i)
+            key = day.strftime("%a %d")
+            data.append({"date": key, "generation": round(buckets.get(key, 0), 2)})
+
+    else:  # 30d
+        since = (now - timedelta(days=30)).isoformat()
+        readings = await db.solar_readings.find(
+            {"device_id": device_id, "timestamp": {"$gte": since}},
+            {"_id": 0, "timestamp": 1, "today_energy_kwh": 1}
+        ).sort("timestamp", 1).to_list(10000)
+
+        buckets = {}
+        for r in readings:
+            try:
+                ts = datetime.fromisoformat(r["timestamp"].replace("Z", "+00:00"))
+                key = ts.strftime("%d %b")
+                val = float(r.get("today_energy_kwh") or 0)
+                buckets[key] = max(buckets.get(key, 0), val)
+            except Exception:
+                continue
+
+        data = []
+        for i in range(30):
+            day = now - timedelta(days=29 - i)
+            key = day.strftime("%d %b")
+            data.append({"date": key, "generation": round(buckets.get(key, 0), 2)})
+
+    total_gen = sum(d.get("generation_kw", d.get("generation", 0)) or 0 for d in data)
+    rate = float(device.get("settings", {}).get("connection_config", {}).get("electricity_rate_pkr", 35))
+
     return {
         "device_id": device_id,
         "period": period,
+        "has_real_data": is_connected and any(
+            (d.get("generation_kw") or d.get("generation", 0)) > 0 for d in data
+        ),
         "data": data,
         "summary": {
-            "total_generation": round(total_generation, 2),
-            "total_consumption": round(total_consumption, 2),
-            "net_export": round(total_generation - total_consumption, 2),
-            "savings_pkr": round(total_generation * 45, 0)
+            "total_generation": round(total_gen, 2),
+            "savings_pkr": round(total_gen * rate, 0),
         }
     }
 

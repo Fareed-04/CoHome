@@ -261,8 +261,14 @@ export default function SolarPage() {
         <div className="bg-white rounded-3xl border border-slate-100 p-6 shadow-soft animate-fade-in-up">
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h3 className="font-bold text-slate-800 text-lg" style={{ fontFamily: "Outfit, sans-serif" }}>Energy Analytics</h3>
-              <p className="text-slate-400 text-xs mt-0.5">{isConnected ? "From your inverter" : "Demo data — connect inverter for real readings"}</p>
+              <h3 className="font-bold text-slate-800 text-lg" style={{ fontFamily: "Outfit, sans-serif" }}>Energy Generation</h3>
+              <p className="text-slate-400 text-xs mt-0.5">
+                {analytics?.has_real_data
+                  ? "Real data from your inverter"
+                  : isConnected
+                    ? "Building history — data appears after first sync"
+                    : "Connect your inverter to see real readings"}
+              </p>
             </div>
             <div className="flex gap-2">
               {["24h", "7d", "30d"].map(p => (
@@ -273,24 +279,26 @@ export default function SolarPage() {
               ))}
             </div>
           </div>
-          {analytics?.data?.length > 0 ? (
+
+          {analytics?.has_real_data ? (
             period === "24h" ? (
               <ResponsiveContainer width="100%" height={250}>
                 <AreaChart data={analytics.data}>
                   <defs>
                     <linearGradient id="solar-gen" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.4} /><stop offset="95%" stopColor="#F59E0B" stopOpacity={0} />
-                    </linearGradient>
-                    <linearGradient id="solar-con" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#6366F1" stopOpacity={0.3} /><stop offset="95%" stopColor="#6366F1" stopOpacity={0} />
+                      <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.4} />
+                      <stop offset="95%" stopColor="#F59E0B" stopOpacity={0} />
                     </linearGradient>
                   </defs>
                   <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
                   <XAxis dataKey="time" tick={{ fontSize: 11, fill: "#94A3B8" }} tickLine={false} axisLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} tickLine={false} axisLine={false} />
-                  <Tooltip contentStyle={{ borderRadius: "12px", border: "1px solid #E2E8F0", boxShadow: "0 4px 20px rgba(0,0,0,0.08)" }} />
-                  <Area type="monotone" dataKey="generation" stroke="#F59E0B" strokeWidth={2.5} fill="url(#solar-gen)" name="Generation (kWh)" />
-                  <Area type="monotone" dataKey="consumption" stroke="#6366F1" strokeWidth={2.5} fill="url(#solar-con)" name="Consumption (kWh)" />
+                  <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} tickLine={false} axisLine={false} unit=" kW" />
+                  <Tooltip
+                    contentStyle={{ borderRadius: "12px", border: "1px solid #E2E8F0", boxShadow: "0 4px 20px rgba(0,0,0,0.08)" }}
+                    formatter={(val) => val != null ? [`${val} kW`, "Generation"] : ["No data", "Generation"]}
+                  />
+                  <Area type="monotone" dataKey="generation_kw" stroke="#F59E0B" strokeWidth={2.5}
+                    fill="url(#solar-gen)" name="Generation (kW)" connectNulls={false} dot={false} />
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
@@ -298,20 +306,47 @@ export default function SolarPage() {
                 <BarChart data={analytics.data}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#F1F5F9" />
                   <XAxis dataKey="date" tick={{ fontSize: 11, fill: "#94A3B8" }} tickLine={false} axisLine={false} />
-                  <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} tickLine={false} axisLine={false} />
-                  <Tooltip contentStyle={{ borderRadius: "12px", border: "1px solid #E2E8F0" }} />
+                  <YAxis tick={{ fontSize: 11, fill: "#94A3B8" }} tickLine={false} axisLine={false} unit=" kWh" />
+                  <Tooltip
+                    contentStyle={{ borderRadius: "12px", border: "1px solid #E2E8F0" }}
+                    formatter={(val) => [`${val} kWh`, "Generation"]}
+                  />
                   <Bar dataKey="generation" fill="#F59E0B" name="Generation (kWh)" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="consumption" fill="#6366F1" name="Consumption (kWh)" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             )
           ) : (
-            <div className="h-48 flex items-center justify-center text-slate-400 text-sm">No data available</div>
+            <div className="h-48 flex flex-col items-center justify-center gap-2">
+              <Sun size={32} className="text-amber-300" />
+              <p className="text-slate-500 text-sm font-medium">
+                {isConnected ? "Syncing data from your inverter…" : "No data yet"}
+              </p>
+              <p className="text-slate-400 text-xs">
+                {isConnected
+                  ? "Your first readings will appear here within 5 minutes"
+                  : "Connect your inverter to see real generation history"}
+              </p>
+            </div>
           )}
-          <div className="flex items-center gap-6 mt-4 justify-center">
-            <div className="flex items-center gap-2 text-xs text-slate-600"><div className="w-3 h-3 bg-amber-500 rounded-full" /> Generation</div>
-            <div className="flex items-center gap-2 text-xs text-slate-600"><div className="w-3 h-3 bg-indigo-500 rounded-full" /> Consumption</div>
-          </div>
+
+          {analytics?.has_real_data && analytics.summary && (
+            <div className="flex items-center gap-6 mt-4 pt-4 border-t border-slate-50 justify-between">
+              <div className="flex items-center gap-2 text-xs text-slate-600">
+                <div className="w-3 h-3 bg-amber-500 rounded-full" />
+                Generation ({period === "24h" ? "avg kW per hour" : "kWh per day"})
+              </div>
+              <div className="text-xs text-slate-500">
+                Total: <span className="font-semibold text-slate-700">
+                  {period === "24h"
+                    ? `${(analytics.data.reduce((s, d) => s + (d.generation_kw || 0), 0)).toFixed(2)} kWh est.`
+                    : `${analytics.summary.total_generation} kWh`}
+                </span>
+                {analytics.summary.savings_pkr > 0 && (
+                  <span className="ml-3">Saved: <span className="font-semibold text-green-600">₨{analytics.summary.savings_pkr.toLocaleString()}</span></span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Disconnect confirm */}

@@ -171,7 +171,9 @@ Build a unified Smart Home IoT SaaS platform for Pakistani homeowners to manage 
 | Mar 2026 | Fixed GoodWe SEMS login: `/v1/` → `/v2/Common/CrossLogin` (v1 was deprecated) |
 | Mar 2026 | Fixed station data endpoint: `/v3/` → `/v2/PowerStation/GetMonitorDetailByPowerstationId` |
 | Mar 2026 | Removed `GetPowerStationList` call (restricted to enterprise NDA accounts only) |
-| Mar 2026 | New GoodWe flow: login verify → show station ID instructions → verify station → save |
+| Mar 2026 | Analytics chart now reads from real `solar_readings` MongoDB collection (was random numbers) |
+| Mar 2026 | Removed fake Consumption line from chart (not available from SEMS API) |
+| Mar 2026 | 24h chart shows average kW per hour from stored readings; 7d/30d shows daily generation totals |
 | Mar 2026 | Improved error handling: SEMS-specific errors shown in UI |
 
 ## Next Tasks (Immediate)
