@@ -674,6 +674,8 @@ class SolarTestRequest(BaseModel):
     brand: str
     username: Optional[str] = None
     password: Optional[str] = None
+    key_id: Optional[str] = None
+    key_secret: Optional[str] = None
     inverter_ip: Optional[str] = None
     station_id: Optional[str] = None
 
@@ -683,6 +685,8 @@ class SolarConfigureRequest(BaseModel):
     station_name: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    key_id: Optional[str] = None
+    key_secret: Optional[str] = None
     inverter_ip: Optional[str] = None
     manual_power_w: Optional[float] = None
     manual_today_kwh: Optional[float] = None
@@ -695,6 +699,8 @@ async def test_solar_connection(data: SolarTestRequest, current_user: dict = Dep
     credentials = {
         "username": data.username,
         "password": data.password,
+        "key_id": data.key_id,
+        "key_secret": data.key_secret,
         "inverter_ip": data.inverter_ip,
         "station_id": data.station_id,
     }
@@ -717,7 +723,7 @@ async def configure_solar_device(device_id: str, data: SolarConfigureRequest, cu
     if device["home_id"] not in home_ids:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    # Build connection config — encrypt password
+    # Build connection config — encrypt secrets
     config = {
         "brand": data.brand,
         "station_id": data.station_id,
@@ -725,9 +731,12 @@ async def configure_solar_device(device_id: str, data: SolarConfigureRequest, cu
         "electricity_rate_pkr": data.electricity_rate_pkr or 35.0,
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    if data.brand == "goodwe":
+    if data.brand in ["goodwe", "growatt", "inverex_growatt"]:
         config["username"] = data.username
         config["password_enc"] = encrypt_credential(data.password) if data.password else ""
+    elif data.brand in ["solis", "inverex_solis"]:
+        config["key_id_enc"] = encrypt_credential(data.key_id) if data.key_id else ""
+        config["key_secret_enc"] = encrypt_credential(data.key_secret) if data.key_secret else ""
     elif data.brand == "fronius":
         config["inverter_ip"] = data.inverter_ip
     elif data.brand == "manual":
@@ -735,9 +744,32 @@ async def configure_solar_device(device_id: str, data: SolarConfigureRequest, cu
         config["manual_today_kwh"] = data.manual_today_kwh or 0
         config["manual_total_kwh"] = data.manual_total_kwh or 0
     else:
-        # coming soon brands — store basic creds
+        # huawei / sungrow / sma — store creds for future use
         config["username"] = data.username
         config["password_enc"] = encrypt_credential(data.password) if data.password else ""
+
+    # FIX: Clear stale data from previous brand so old readings don't bleed through
+    await db.devices.update_one(
+        {"device_id": device_id},
+        {"$unset": {
+            "settings.current_power_w": "",
+            "settings.today_generation_kwh": "",
+            "settings.total_energy_kwh": "",
+            "settings.grid_voltage_v": "",
+            "settings.grid_frequency_hz": "",
+            "settings.temperature_c": "",
+            "settings.pv_strings": "",
+            "settings.capacity_kw": "",
+            "settings.inverter_model": "",
+            "settings.inverter_sn": "",
+            "settings.monthly_savings_pkr": "",
+            "settings.last_sync": "",
+            "settings.last_sync_error": "",
+            "settings.battery_soc": "",
+            "settings.grid_import_w": "",
+            "settings.grid_export_w": "",
+        }}
+    )
 
     await db.devices.update_one(
         {"device_id": device_id},
@@ -749,7 +781,8 @@ async def configure_solar_device(device_id: str, data: SolarConfigureRequest, cu
     )
 
     # Trigger immediate sync for live brands
-    if data.brand in ["goodwe", "fronius", "manual"]:
+    live_brands = ["goodwe", "growatt", "fronius", "manual", "solis", "inverex_growatt", "inverex_solis"]
+    if data.brand in live_brands:
         asyncio.create_task(sync_solar_device_task(device_id))
 
     return {"success": True, "message": "Solar inverter configured successfully.", "config": {k: v for k, v in config.items() if k != "password_enc"}}
@@ -803,7 +836,9 @@ async def get_solar_live(device_id: str, current_user: dict = Depends(get_curren
         "current_power_w": s.get("current_power_w", 0),
         "today_energy_kwh": s.get("today_generation_kwh", 0),
         "total_energy_kwh": s.get("total_energy_kwh", 0),
-        "battery_percentage": s.get("battery_percentage", 0),
+        "battery_soc": s.get("battery_soc", 0),
+        "grid_import_w": s.get("grid_import_w", 0),
+        "grid_export_w": s.get("grid_export_w", 0),
         "grid_voltage_v": s.get("grid_voltage_v", 0),
         "grid_frequency_hz": s.get("grid_frequency_hz", 0),
         "temperature_c": s.get("temperature_c", 0),
@@ -844,8 +879,29 @@ async def disconnect_solar(device_id: str, current_user: dict = Depends(get_curr
 
     await db.devices.update_one(
         {"device_id": device_id},
-        {"$unset": {"settings.connection_config": "", "settings.connection_brand": "", "settings.connection_status": ""}}
+        {"$unset": {
+            "settings.connection_config": "",
+            "settings.connection_brand": "",
+            "settings.connection_status": "",
+            "settings.current_power_w": "",
+            "settings.today_generation_kwh": "",
+            "settings.total_energy_kwh": "",
+            "settings.grid_voltage_v": "",
+            "settings.grid_frequency_hz": "",
+            "settings.temperature_c": "",
+            "settings.pv_strings": "",
+            "settings.capacity_kw": "",
+            "settings.inverter_model": "",
+            "settings.inverter_sn": "",
+            "settings.monthly_savings_pkr": "",
+            "settings.last_sync": "",
+            "settings.last_sync_error": "",
+            "settings.battery_soc": "",
+            "settings.grid_import_w": "",
+            "settings.grid_export_w": "",
+        }}
     )
+    await db.devices.update_one({"device_id": device_id}, {"$set": {"status": "offline"}})
     return {"success": True, "message": "Solar inverter disconnected."}
 
 # ===================== SOLAR BACKGROUND HELPERS =====================
@@ -865,6 +921,9 @@ async def _apply_solar_data(device_id: str, config: dict, data: dict):
             "settings.grid_frequency_hz": data.get("grid_frequency_hz", 0),
             "settings.temperature_c": data.get("temperature_c", 0),
             "settings.pv_strings": data.get("pv_strings", []),
+            "settings.battery_soc": data.get("battery_soc", 0),
+            "settings.grid_import_w": data.get("grid_import_w", 0),
+            "settings.grid_export_w": data.get("grid_export_w", 0),
             "settings.monthly_savings_pkr": monthly_savings,
             "settings.last_sync": datetime.now(timezone.utc).isoformat(),
             "settings.last_sync_error": None,
@@ -919,7 +978,8 @@ async def solar_polling_background():
 
             for device in devices:
                 config = device.get("settings", {}).get("connection_config", {})
-                if config.get("brand") in ["goodwe", "fronius", "manual"]:
+                live_brands = ["goodwe", "growatt", "fronius", "manual", "solis", "inverex_growatt", "inverex_solis"]
+                if config.get("brand") in live_brands:
                     try:
                         data = await asyncio.to_thread(fetch_solar_live_data, config)
                         await _apply_solar_data(device["device_id"], config, data)

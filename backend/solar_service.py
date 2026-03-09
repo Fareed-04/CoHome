@@ -1,10 +1,20 @@
 """
 Solar Inverter Integration Service
-Supports: GoodWe (SEMS), Fronius (Local API), Manual Entry
-Coming soon: Huawei, Growatt, Sungrow, Solis, SMA, Inverex
+Normalized data schema returned by every adapter:
+{
+    is_online, current_power_w, today_energy_kwh, total_energy_kwh,
+    grid_voltage_v, grid_frequency_hz, temperature_c, capacity_kw,
+    battery_soc, grid_import_w, grid_export_w,
+    pv_strings, inverter_sn, model, station_name
+}
 """
 
+import re
 import json
+import hmac
+import hashlib
+import base64
+import time
 import requests
 import os
 import logging
@@ -19,9 +29,9 @@ logger = logging.getLogger(__name__)
 def get_fernet() -> Fernet:
     key = os.environ.get("ENCRYPTION_KEY", "")
     if not key:
-        import base64, hashlib
+        import base64 as b64, hashlib as hs
         seed = os.environ.get("MONGO_URL", "cohome-fallback-key-dev")
-        key = base64.urlsafe_b64encode(hashlib.sha256(seed.encode()).digest()).decode()
+        key = b64.urlsafe_b64encode(hs.sha256(seed.encode()).digest()).decode()
     return Fernet(key.encode() if isinstance(key, str) else key)
 
 def encrypt_credential(value: str) -> str:
@@ -30,20 +40,26 @@ def encrypt_credential(value: str) -> str:
 def decrypt_credential(value: str) -> str:
     return get_fernet().decrypt(value.encode()).decode()
 
+def fval(v, default=0.0) -> float:
+    """Convert any solar API value to float. Handles None, '', '0W', '230.5V', etc."""
+    if v is None or v == "":
+        return float(default)
+    try:
+        return float(v)
+    except (ValueError, TypeError):
+        m = re.match(r"^-?[\d.]+", str(v).strip())
+        return float(m.group()) if m else float(default)
+
 
 # ===================== GOODWE SEMS =====================
 
 class SEMSConnector:
-    """GoodWe SEMS Portal (semsportal.com) integration"""
     BASE_URL = "https://www.semsportal.com/api"
 
     def __init__(self, username: str, password: str):
         self.username = username
         self.password = password
-        self.token = None
-        self.uid = None
-        self.timestamp = None
-        self.api_domain = None
+        self.token = self.uid = self.timestamp = self.api_domain = None
 
     def _base_header(self) -> str:
         return json.dumps({"version": "v2.1.0", "client": "ios", "language": "en"})
@@ -63,42 +79,18 @@ class SEMSConnector:
         )
         resp.raise_for_status()
         data = resp.json()
-
-        # FIX 4: SEMS returns code as int 0 OR string "0" depending on region/version
         code = data.get("code")
         if str(code) != "0":
             msg = data.get("msg") or data.get("message") or "Login failed"
             raise ValueError(f"SEMS login error (code {code}): {msg}")
-
         d = data.get("data") or {}
         self.token = d.get("token")
         self.uid = d.get("uid")
         self.timestamp = d.get("timestamp")
-        # Use the regional API domain returned by login (e.g. globalapi.sems.com.cn/api).
-        # Ensure it ends without a trailing slash for clean URL construction.
         raw_api = d.get("api") or self.BASE_URL
         self.api_domain = raw_api.rstrip("/")
-        logger.info(f"SEMS CrossLogin OK — api_domain: {self.api_domain}")
+        logger.info(f"SEMS login OK — api_domain: {self.api_domain}")
         return d
-
-    def get_stations(self) -> list:
-        if not self.token:
-            self.login()
-        resp = requests.post(
-            f"{self.api_domain}/v2/PowerStation/GetPowerStationList",
-            json={"pageSize": 20, "pageIndex": 1, "orderByIndex": 0},
-            headers={"Content-Type": "application/json", "Token": self._auth_header()},
-            timeout=15
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if str(data.get("code", "")) != "0":
-            raise ValueError(f"Failed to list stations: {data.get('msg', data.get('message', 'Unknown error'))}")
-        raw = data.get("data", {})
-        # API can return {"data": {"list": [...]}} or {"data": [...]} depending on account type
-        if isinstance(raw, list):
-            return raw
-        return raw.get("list", raw.get("datas", []))
 
     def get_station_data(self, station_id: str) -> dict:
         if not self.token:
@@ -119,24 +111,8 @@ class SEMSConnector:
         inv_list = data.get("inverter", [])
         inv = inv_list[0] if isinstance(inv_list, list) and inv_list else (inv_list if isinstance(inv_list, dict) else {})
         info = data.get("info", {})
-
-        def fval(v, default=0.0):
-            """Convert SEMS value to float — handles None, '', '0W', '230.5V', etc."""
-            if v is None or v == "":
-                return float(default)
-            try:
-                return float(v)
-            except (ValueError, TypeError):
-                # Strip trailing non-numeric chars (units like W, V, Hz, kWh, %)
-                import re
-                m = re.match(r"^-?[\d.]+", str(v).strip())
-                return float(m.group()) if m else float(default)
-
-        vpv1 = fval(inv.get("vpv1"))
-        ipv1 = fval(inv.get("ipv1"))
-        vpv2 = fval(inv.get("vpv2"))
-        ipv2 = fval(inv.get("ipv2"))
-
+        vpv1, ipv1 = fval(inv.get("vpv1")), fval(inv.get("ipv1"))
+        vpv2, ipv2 = fval(inv.get("vpv2")), fval(inv.get("ipv2"))
         return {
             "is_online": info.get("status", 0) == 1,
             "current_power_w": fval(inv.get("output_power") or inv.get("pac")),
@@ -146,23 +122,202 @@ class SEMSConnector:
             "grid_frequency_hz": fval(inv.get("fac1")),
             "temperature_c": fval(inv.get("tempperature") or inv.get("temperature")),
             "capacity_kw": fval(info.get("capacity")),
+            "battery_soc": 0,
+            "grid_import_w": 0,
+            "grid_export_w": fval(inv.get("output_power") or inv.get("pac")),
             "pv_strings": [
                 {"string": 1, "voltage_v": vpv1, "current_a": ipv1, "power_w": vpv1 * ipv1},
                 {"string": 2, "voltage_v": vpv2, "current_a": ipv2, "power_w": vpv2 * ipv2},
             ],
             "inverter_sn": inv.get("sn"),
             "model": inv.get("model_type"),
-            "rssi": inv.get("rssi"),
-            "last_update": inv.get("last_update_time"),
             "station_name": info.get("stationname", "My Station"),
-            "total_hours": fval(inv.get("htotal")),
+        }
+
+
+# ===================== GROWATT SHINEMONITOR =====================
+
+class GrowattConnector:
+    """Growatt ShineMonitor — uses growattServer library (PyPI)"""
+
+    def __init__(self, username: str, password: str):
+        self.username = username
+        self.password = password
+        self._api = None
+        self._user_id = None
+
+    def _get_api(self):
+        if self._api is None:
+            import growattServer
+            self._api = growattServer.GrowattApi(add_random_user_id=True)
+        return self._api
+
+    def login(self) -> dict:
+        api = self._get_api()
+        result = api.login(self.username, self.password)
+        if not result or result.get("error_code", 1) != 0:
+            msg = result.get("error_msg", "Login failed") if result else "No response from Growatt"
+            raise ValueError(f"Growatt login failed: {msg}")
+        self._user_id = result.get("user", {}).get("id") or result.get("userId", "")
+        logger.info(f"Growatt login OK — user_id: {self._user_id}")
+        return result
+
+    def get_plants(self) -> list:
+        api = self._get_api()
+        if not self._user_id:
+            self.login()
+        plants = api.plant_list(self._user_id)
+        if not plants:
+            raise ValueError("No plants found on this Growatt account")
+        return plants
+
+    def get_plant_data(self, plant_id: str) -> dict:
+        api = self._get_api()
+        if not self._user_id:
+            self.login()
+        devices = api.device_list(plant_id)
+        if not devices:
+            raise ValueError(f"No devices found in plant {plant_id}")
+
+        device = devices[0]
+        device_sn = device.get("deviceSn") or device.get("sn") or device.get("id", "")
+        device_type = (device.get("deviceType") or "").lower()
+
+        try:
+            if "mix" in device_type or "sph" in device_type:
+                detail = api.mix_info(device_sn, plant_id=plant_id)
+                pac = fval(detail.get("pactogrid") or detail.get("pac") or detail.get("ppv"))
+                eday = fval(detail.get("etoday") or detail.get("epvtoday"))
+                etotal = fval(detail.get("etotal") or detail.get("epvtotal"))
+                soc = fval(detail.get("SOC") or detail.get("soc"))
+                grid_import = fval(detail.get("pactouse") or detail.get("pacToUser"))
+                grid_export = fval(detail.get("pactogrid"))
+                temp = fval(detail.get("tempperature") or detail.get("temperature"))
+                model = detail.get("deviceModel") or device.get("model", "Growatt Mix")
+            else:
+                detail = api.inverter_detail(device_sn)
+                pac = fval(detail.get("pac") or detail.get("power"))
+                eday = fval(detail.get("etoday") or detail.get("eactoday"))
+                etotal = fval(detail.get("etotal") or detail.get("eactotal"))
+                soc = 0
+                grid_import = 0
+                grid_export = pac
+                temp = fval(detail.get("temperature") or detail.get("tempperature"))
+                model = detail.get("deviceModel") or device.get("model", "Growatt Inverter")
+        except Exception as e:
+            logger.warning(f"Growatt device detail error: {e} — using device list data")
+            pac = fval(device.get("power") or device.get("pac"))
+            eday = fval(device.get("eToday") or device.get("etoday"))
+            etotal = fval(device.get("eTotal") or device.get("etotal"))
+            soc = grid_import = 0
+            grid_export = pac
+            temp = fval(device.get("temperature"))
+            model = device.get("model", "Growatt Inverter")
+            detail = {}
+
+        pv_strings = []
+        for i in range(1, 5):
+            v = fval(detail.get(f"vpv{i}", 0))
+            a = fval(detail.get(f"ipv{i}", 0))
+            if v > 0:
+                pv_strings.append({"string": i, "voltage_v": v, "current_a": a, "power_w": v * a})
+
+        return {
+            "is_online": device.get("status", 0) not in [0, "0", "offline"],
+            "current_power_w": pac * 1000 if pac < 100 else pac,
+            "today_energy_kwh": eday,
+            "total_energy_kwh": etotal,
+            "grid_voltage_v": fval(detail.get("vac1") or device.get("vac") or 0),
+            "grid_frequency_hz": fval(detail.get("fac1", 0)),
+            "temperature_c": temp,
+            "capacity_kw": fval(device.get("capacity") or device.get("nominalPower")),
+            "battery_soc": soc,
+            "grid_import_w": grid_import * 1000 if grid_import < 100 else grid_import,
+            "grid_export_w": grid_export * 1000 if grid_export < 100 else grid_export,
+            "pv_strings": pv_strings,
+            "inverter_sn": device_sn,
+            "model": model,
+            "station_name": device.get("plantName") or f"Plant {plant_id}",
+        }
+
+
+# ===================== SOLIS SOLISCLOUD =====================
+
+class SolisConnector:
+    """Solis SolisCloud — HMAC-SHA256 API key authentication"""
+    BASE_URL = "https://www.soliscloud.com:13333"
+
+    def __init__(self, key_id: str, key_secret: str):
+        self.key_id = key_id
+        self.key_secret = key_secret
+
+    def _sign(self, path: str, body: str) -> dict:
+        md5 = base64.b64encode(hashlib.md5(body.encode()).digest()).decode()
+        date = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S GMT")
+        sign_str = f"POST\n{md5}\napplication/json\n{date}\n{path}"
+        sig = base64.b64encode(
+            hmac.new(self.key_secret.encode(), sign_str.encode(), hashlib.sha1).digest()
+        ).decode()
+        return {
+            "Content-Type": "application/json",
+            "Content-MD5": md5,
+            "Date": date,
+            "Authorization": f"API {self.key_id}:{sig}",
+        }
+
+    def _post(self, path: str, body: dict) -> dict:
+        body_str = json.dumps(body)
+        headers = self._sign(path, body_str)
+        resp = requests.post(f"{self.BASE_URL}{path}", headers=headers, data=body_str, timeout=15)
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_plants(self) -> list:
+        data = self._post("/v1/api/userStationList", {"pageNo": 1, "pageSize": 20})
+        if not data.get("success"):
+            raise ValueError(f"Solis plant list error: {data.get('msg', 'Unknown error')}")
+        records = data.get("data", {}).get("page", {}).get("records", [])
+        if not records:
+            raise ValueError("No plants found on this Solis account")
+        return records
+
+    def get_plant_data(self, station_id: str) -> dict:
+        data = self._post("/v1/api/stationDetail", {"id": station_id})
+        if not data.get("success"):
+            raise ValueError(f"Solis station detail error: {data.get('msg', 'Unknown error')}")
+        d = data.get("data", {})
+
+        # Real-time inverter data
+        inv_data = self._post("/v1/api/inverterList", {"stationId": station_id, "pageNo": 1, "pageSize": 1})
+        inv = {}
+        if inv_data.get("success"):
+            records = inv_data.get("data", {}).get("page", {}).get("records", [])
+            inv = records[0] if records else {}
+
+        pac = fval(inv.get("pac") or d.get("pac"))
+        return {
+            "is_online": inv.get("state", 0) == 1,
+            "current_power_w": pac * 1000 if pac < 500 else pac,
+            "today_energy_kwh": fval(d.get("dayEnergy") or inv.get("eToday")),
+            "total_energy_kwh": fval(d.get("allEnergy") or inv.get("eTotal")),
+            "grid_voltage_v": fval(inv.get("uAc1") or inv.get("uac")),
+            "grid_frequency_hz": fval(inv.get("fAc1")),
+            "temperature_c": fval(inv.get("inverterTemperature")),
+            "capacity_kw": fval(d.get("capacity")),
+            "battery_soc": fval(inv.get("batteryCapacitySoc") or inv.get("socDischargeSet")),
+            "grid_import_w": fval(inv.get("psum")),
+            "grid_export_w": fval(inv.get("pacToGrid")),
+            "pv_strings": [],
+            "inverter_sn": inv.get("sn"),
+            "model": inv.get("model") or inv.get("inverterModel"),
+            "station_name": d.get("stationName", f"Solis Station {station_id}"),
         }
 
 
 # ===================== FRONIUS LOCAL =====================
 
 class FroniusConnector:
-    """Fronius local API — no cloud needed, direct LAN access"""
+    """Fronius local API — direct LAN access, no cloud"""
 
     def __init__(self, inverter_ip: str, device_id: int = 1):
         self.base_url = f"http://{inverter_ip.strip()}/solar_api/v1"
@@ -170,87 +325,163 @@ class FroniusConnector:
 
     def get_realtime_data(self) -> dict:
         resp = requests.get(
+            f"{self.base_url}/GetPowerFlowRealtimeData.fcgi",
+            timeout=5
+        )
+        resp.raise_for_status()
+        site = resp.json().get("Body", {}).get("Data", {}).get("Site", {})
+        inv_data_resp = requests.get(
             f"{self.base_url}/GetInverterRealtimeData.cgi",
             params={"Scope": "Device", "DeviceId": self.device_id, "DataCollection": "CommonInverterData"},
             timeout=5
         )
-        resp.raise_for_status()
-        body = resp.json().get("Body", {}).get("Data", {})
+        inv_body = inv_data_resp.json().get("Body", {}).get("Data", {})
 
-        def val(key):
-            return float((body.get(key) or {}).get("Value", 0) or 0)
+        def val(d, key):
+            return float((d.get(key) or {}).get("Value", 0) or 0)
 
+        pac = fval(site.get("P_PV") or site.get("P_Load") or 0)
         return {
             "is_online": True,
-            "current_power_w": val("PAC"),
-            "today_energy_kwh": val("DAY_ENERGY") / 1000,
-            "total_energy_kwh": val("TOTAL_ENERGY") / 1000,
-            "grid_voltage_v": val("UAC"),
-            "grid_frequency_hz": val("FAC"),
-            "temperature_c": val("T_AMBIENT"),
+            "current_power_w": abs(pac),
+            "today_energy_kwh": val(inv_body, "DAY_ENERGY") / 1000,
+            "total_energy_kwh": val(inv_body, "TOTAL_ENERGY") / 1000,
+            "grid_voltage_v": val(inv_body, "UAC"),
+            "grid_frequency_hz": val(inv_body, "FAC"),
+            "temperature_c": val(inv_body, "T_AMBIENT"),
+            "capacity_kw": 0,
+            "battery_soc": 0,
+            "grid_import_w": max(0, fval(site.get("P_Grid"))),
+            "grid_export_w": max(0, -fval(site.get("P_Grid"))),
             "pv_strings": [],
-            "station_name": f"Fronius Inverter",
+            "station_name": "Fronius Inverter",
         }
 
 
 # ===================== DISPATCHER =====================
 
+def _normalize(data: dict) -> dict:
+    """Ensure all required fields are present with correct types."""
+    return {
+        "is_online": bool(data.get("is_online", False)),
+        "current_power_w": fval(data.get("current_power_w")),
+        "today_energy_kwh": fval(data.get("today_energy_kwh")),
+        "total_energy_kwh": fval(data.get("total_energy_kwh")),
+        "grid_voltage_v": fval(data.get("grid_voltage_v")),
+        "grid_frequency_hz": fval(data.get("grid_frequency_hz")),
+        "temperature_c": fval(data.get("temperature_c")),
+        "capacity_kw": fval(data.get("capacity_kw")),
+        "battery_soc": fval(data.get("battery_soc")),
+        "grid_import_w": fval(data.get("grid_import_w")),
+        "grid_export_w": fval(data.get("grid_export_w")),
+        "pv_strings": data.get("pv_strings") or [],
+        "inverter_sn": data.get("inverter_sn"),
+        "model": data.get("model"),
+        "station_name": data.get("station_name", "My Station"),
+    }
+
+
 def test_connection_sync(brand: str, credentials: dict) -> dict:
-    """Test solar connection (synchronous — run in thread). Returns station info."""
+    """Test solar connection (synchronous — run in thread)."""
     try:
         if brand == "goodwe":
             connector = SEMSConnector(credentials["username"], credentials["password"])
             connector.login()
-            station_id = credentials.get("station_id", "").strip()
-
+            station_id = (credentials.get("station_id") or "").strip()
             if station_id:
-                # Verify the station_id works by fetching its data
                 station_data = connector.get_station_data(station_id)
-                station_name = station_data.get("station_name", "My Station")
-                power_kw = station_data.get("current_power_w", 0) / 1000
+                name = station_data.get("station_name", "My Station")
+                kw = station_data.get("current_power_w", 0) / 1000
                 return {
                     "success": True,
-                    "message": f"Connected! Station '{station_name}' found. Current output: {power_kw:.2f} kW",
-                    "stations": [{"id": station_id, "name": station_name, "capacity": 0}],
+                    "message": f"Connected! Station '{name}' — Current output: {kw:.2f} kW",
+                    "stations": [{"id": station_id, "name": name, "capacity": 0}],
                 }
             else:
-                # No station_id — login worked but we can't auto-list stations
-                # (GetPowerStationList requires enterprise/partner API access)
                 return {
                     "success": True,
                     "needs_station_id": True,
-                    "message": "Login successful! To complete setup, enter your Power Station ID below.",
+                    "message": "Login verified! Enter your Power Station ID to complete setup.",
                     "stations": [],
                 }
+
+        elif brand == "growatt":
+            connector = GrowattConnector(credentials["username"], credentials["password"])
+            login_res = connector.login()
+            plants = connector.get_plants()
+            plant = plants[0]
+            plant_id = str(plant.get("id") or plant.get("plantId") or "")
+            plant_name = plant.get("plantName") or plant.get("name") or f"Plant {plant_id}"
+            return {
+                "success": True,
+                "message": f"Connected to Growatt! Found {len(plants)} plant(s). Using: '{plant_name}'",
+                "stations": [{"id": str(p.get("id") or p.get("plantId", "")), "name": p.get("plantName") or p.get("name", "Plant"), "capacity": fval(p.get("nominalPower") or p.get("capacity"))} for p in plants[:5]],
+            }
+
+        elif brand == "solis":
+            connector = SolisConnector(credentials["key_id"], credentials["key_secret"])
+            plants = connector.get_plants()
+            plant = plants[0]
+            plant_id = str(plant.get("id") or "")
+            plant_name = plant.get("stationName") or plant.get("name") or f"Station {plant_id}"
+            return {
+                "success": True,
+                "message": f"Connected to SolisCloud! Found {len(plants)} plant(s). Using: '{plant_name}'",
+                "stations": [{"id": str(p.get("id", "")), "name": p.get("stationName") or p.get("name", "Station"), "capacity": fval(p.get("capacity"))} for p in plants[:5]],
+            }
 
         elif brand == "fronius":
             connector = FroniusConnector(credentials["inverter_ip"])
             data = connector.get_realtime_data()
             return {
                 "success": True,
-                "message": f"Fronius connected! Current: {data['current_power_w']/1000:.2f} kW",
+                "message": f"Fronius connected! Current output: {data['current_power_w']/1000:.2f} kW",
                 "stations": [{"id": "local", "name": "Fronius Inverter", "capacity": 0}],
+            }
+
+        elif brand == "inverex_growatt":
+            # Inverex (Growatt-based) — same as Growatt
+            connector = GrowattConnector(credentials["username"], credentials["password"])
+            connector.login()
+            plants = connector.get_plants()
+            plant = plants[0]
+            plant_id = str(plant.get("id") or plant.get("plantId") or "")
+            plant_name = plant.get("plantName") or plant.get("name") or f"Plant {plant_id}"
+            return {
+                "success": True,
+                "message": f"Connected to Inverex (Growatt)! Found '{plant_name}'",
+                "stations": [{"id": str(p.get("id") or p.get("plantId", "")), "name": p.get("plantName") or p.get("name", "Plant"), "capacity": 0} for p in plants[:5]],
+            }
+
+        elif brand == "inverex_solis":
+            # Inverex (Solis-based) — same as Solis
+            connector = SolisConnector(credentials["key_id"], credentials["key_secret"])
+            plants = connector.get_plants()
+            plant = plants[0]
+            plant_id = str(plant.get("id") or "")
+            return {
+                "success": True,
+                "message": f"Connected to Inverex (Solis)! Found '{plant.get('stationName', plant_id)}'",
+                "stations": [{"id": str(p.get("id", "")), "name": p.get("stationName", "Station"), "capacity": 0} for p in plants[:5]],
             }
 
         elif brand == "manual":
             return {
                 "success": True,
-                "message": "Manual data entry set up successfully.",
+                "message": "Manual data entry configured.",
                 "stations": [{"id": "manual", "name": "Manual Entry", "capacity": 0}],
             }
 
-        elif brand in ["huawei", "growatt", "sungrow", "solis", "sma", "inverex"]:
-            brand_names = {
-                "huawei": "Huawei FusionSolar", "growatt": "Growatt ShineMonitor",
-                "sungrow": "Sungrow iSolarCloud", "solis": "Solis Cloud",
-                "sma": "SMA Sunny Portal", "inverex": "Inverex",
+        elif brand in ["huawei", "sungrow", "sma"]:
+            brand_labels = {
+                "huawei": "Huawei FusionSolar",
+                "sungrow": "Sungrow iSolarCloud",
+                "sma": "SMA Sunny Portal",
             }
-            return {
-                "success": True,
-                "coming_soon": True,
-                "message": f"{brand_names.get(brand, brand)} integration is in development. Credentials saved — you'll get live data when it launches!",
-                "stations": [{"id": "pending", "name": "Pending Integration", "capacity": 0}],
-            }
+            raise ValueError(
+                f"{brand_labels[brand]} requires partner/OpenAPI access — "
+                f"regular account credentials cannot be used. Please follow the setup guide shown in the connection wizard."
+            )
 
         else:
             raise ValueError(f"Unknown brand: {brand}")
@@ -258,11 +489,11 @@ def test_connection_sync(brand: str, credentials: dict) -> dict:
     except ValueError:
         raise
     except requests.exceptions.ConnectionError as e:
-        raise ValueError(f"Cannot connect to {brand} portal. Check your internet connection. ({e})")
+        raise ValueError(f"Cannot connect to {brand} portal. Check internet connection.")
     except requests.exceptions.Timeout:
-        raise ValueError(f"Connection timed out connecting to {brand} portal. Check network access.")
+        raise ValueError(f"Connection timed out. Check network access.")
     except requests.exceptions.HTTPError as e:
-        raise ValueError(f"HTTP error from {brand} API: {e.response.status_code} {e.response.text[:200]}")
+        raise ValueError(f"HTTP {e.response.status_code} from {brand} API: {e.response.text[:200]}")
     except Exception as e:
         raise ValueError(f"Unexpected error: {str(e)}")
 
@@ -272,28 +503,41 @@ def fetch_solar_live_data(connection_config: dict) -> dict:
     brand = connection_config.get("brand")
 
     if brand == "goodwe":
-        connector = SEMSConnector(
+        c = SEMSConnector(
             connection_config["username"],
             decrypt_credential(connection_config["password_enc"])
         )
-        connector.login()
-        return connector.get_station_data(connection_config["station_id"])
+        c.login()
+        return _normalize(c.get_station_data(connection_config["station_id"]))
+
+    elif brand == "growatt" or brand == "inverex_growatt":
+        c = GrowattConnector(
+            connection_config["username"],
+            decrypt_credential(connection_config["password_enc"])
+        )
+        c.login()
+        return _normalize(c.get_plant_data(connection_config["station_id"]))
+
+    elif brand == "solis" or brand == "inverex_solis":
+        c = SolisConnector(
+            decrypt_credential(connection_config["key_id_enc"]),
+            decrypt_credential(connection_config["key_secret_enc"])
+        )
+        return _normalize(c.get_plant_data(connection_config["station_id"]))
 
     elif brand == "fronius":
-        return FroniusConnector(connection_config["inverter_ip"]).get_realtime_data()
+        return _normalize(FroniusConnector(connection_config["inverter_ip"]).get_realtime_data())
 
     elif brand == "manual":
-        return {
+        return _normalize({
             "is_online": True,
             "current_power_w": float(connection_config.get("manual_power_w", 0)),
             "today_energy_kwh": float(connection_config.get("manual_today_kwh", 0)),
             "total_energy_kwh": float(connection_config.get("manual_total_kwh", 0)),
             "grid_voltage_v": 220.0,
             "grid_frequency_hz": 50.0,
-            "temperature_c": 0,
-            "pv_strings": [],
             "station_name": "Manual Entry",
-        }
+        })
 
     else:
-        raise ValueError(f"Live data not yet available for brand: {brand}")
+        raise ValueError(f"Brand '{brand}' is not yet supported for live data polling.")

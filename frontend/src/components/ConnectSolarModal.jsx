@@ -7,56 +7,67 @@ const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const BRANDS = [
   {
     id: "goodwe", name: "GoodWe", platform: "SEMS Portal", type: "cloud",
-    badge: "Your Setup", badgeColor: "bg-amber-100 text-amber-700",
+    badge: "Working", badgeColor: "bg-green-100 text-green-700",
     highlight: true, logo: "⚡",
     help: "Uses your SEMS Portal account at semsportal.com. Polls every 5 minutes automatically.",
     fields: ["username", "password", "station_id_required"],
     stationHelp: "Log into semsportal.com → click your plant → copy the UUID from the URL: semsportal.com/PowerStation/PowerStatusSnMin/{YOUR-ID-HERE}",
   },
   {
+    id: "growatt", name: "Growatt", platform: "ShineMonitor", type: "cloud",
+    badge: "Live", badgeColor: "bg-green-100 text-green-700",
+    logo: "🌱",
+    help: "Uses your Growatt ShineMonitor account (server.growatt.com). Auto-discovers your plants.",
+    fields: ["username", "password"],
+  },
+  {
+    id: "solis", name: "Solis", platform: "SolisCloud", type: "cloud",
+    badge: "API Key", badgeColor: "bg-sky-100 text-sky-700",
+    logo: "🔆",
+    help: "SolisCloud requires API keys (not your login password). Get them free at soliscloud.com → Service → API Management.",
+    fields: ["key_id", "key_secret", "station_id_optional"],
+    stationHelp: "Leave blank to auto-discover your first plant, or enter a specific Plant ID from SolisCloud.",
+  },
+  {
     id: "fronius", name: "Fronius", platform: "Local API", type: "local",
     badge: "Fastest", badgeColor: "bg-green-100 text-green-700",
     logo: "🔌",
-    help: "Direct LAN access — no cloud needed! Connects to your inverter on your home network. Response in <100ms.",
+    help: "Direct LAN access — no cloud needed! Connects to your inverter on your home network.",
     fields: ["inverter_ip"],
     ipHelp: "Your Fronius inverter's local IP (e.g., 192.168.1.100). Check your router's connected devices.",
   },
   {
-    id: "huawei", name: "Huawei", platform: "FusionSolar", type: "cloud",
-    logo: "☀️", comingSoon: false,
-    help: "FusionSolar cloud platform. Save credentials now — live data activates with upcoming update.",
-    fields: ["username", "password", "station_id_optional"],
+    id: "inverex_growatt", name: "Inverex (Growatt)", platform: "ShineMonitor", type: "cloud",
+    badge: "🇵🇰 Local", badgeColor: "bg-emerald-100 text-emerald-700",
+    logo: "🇵🇰",
+    help: "For Inverex units that use Growatt hardware. Use your Growatt/ShineMonitor account credentials.",
+    fields: ["username", "password"],
   },
   {
-    id: "growatt", name: "Growatt", platform: "ShineMonitor", type: "cloud",
-    logo: "🌱", comingSoon: false,
-    help: "Growatt ShineMonitor cloud platform. Credentials saved for upcoming integration.",
-    fields: ["username", "password", "station_id_optional"],
+    id: "inverex_solis", name: "Inverex (Solis)", platform: "SolisCloud", type: "cloud",
+    badge: "🇵🇰 Local", badgeColor: "bg-emerald-100 text-emerald-700",
+    logo: "🇵🇰",
+    help: "For Inverex units that use Solis hardware. Requires SolisCloud API keys.",
+    fields: ["key_id", "key_secret", "station_id_optional"],
+    stationHelp: "Leave blank to auto-discover your first plant.",
+  },
+  {
+    id: "huawei", name: "Huawei", platform: "FusionSolar", type: "cloud",
+    logo: "☀️", partnerOnly: true,
+    partnerGuide: "Huawei FusionSolar requires a partner/enterprise OpenAPI account. Regular app credentials do not work. Email eu_inverter_support@huawei.com to request access.",
+    fields: [],
   },
   {
     id: "sungrow", name: "Sungrow", platform: "iSolarCloud", type: "cloud",
-    logo: "☁️",
-    help: "iSolarCloud platform. Integration coming soon.",
-    fields: ["username", "password"],
-  },
-  {
-    id: "solis", name: "Solis", platform: "Solis Cloud", type: "cloud",
-    logo: "🔆",
-    help: "Solis cloud monitoring integration coming soon.",
-    fields: ["username", "password"],
+    logo: "☁️", partnerOnly: true,
+    partnerGuide: "Sungrow iSolarCloud requires registering an app in the developer portal and signing an NDA. Contact service@sungrow-emea.com to start the process.",
+    fields: [],
   },
   {
     id: "sma", name: "SMA", platform: "Sunny Portal", type: "cloud",
-    logo: "💡",
-    help: "SMA Sunny Portal integration coming soon.",
-    fields: ["username", "password"],
-  },
-  {
-    id: "inverex", name: "Inverex", platform: "Pakistani Brand", type: "manual",
-    badge: "Local Brand", badgeColor: "bg-emerald-100 text-emerald-700",
-    logo: "🇵🇰",
-    help: "Enter your Inverex data manually or use our upcoming direct integration.",
-    fields: ["manual"],
+    logo: "💡", partnerOnly: true,
+    partnerGuide: "SMA Sunny Portal requires partner API access. Contact SMA support to request OpenAPI credentials.",
+    fields: [],
   },
   {
     id: "manual", name: "Manual Entry", platform: "Direct Input", type: "manual",
@@ -97,9 +108,15 @@ function BrandCard({ brand, selected, onClick }) {
 }
 
 export default function ConnectSolarModal({ device, onClose, onConnected }) {
-  const [step, setStep] = useState(1); // 1: brand, 2: credentials, 3: testing, 4: done
+  const [step, setStep] = useState(1);
   const [brand, setBrand] = useState(null);
-  const [form, setForm] = useState({ username: "", password: "", inverter_ip: "", station_id: "", electricity_rate_pkr: "35", manual_power_w: "", manual_today_kwh: "", manual_total_kwh: "" });
+  const [form, setForm] = useState({
+    username: "", password: "",
+    key_id: "", key_secret: "",
+    inverter_ip: "", station_id: "",
+    electricity_rate_pkr: "35",
+    manual_power_w: "", manual_today_kwh: "", manual_total_kwh: "",
+  });
   const [stations, setStations] = useState([]);
   const [selectedStation, setSelectedStation] = useState(null);
   const [testResult, setTestResult] = useState(null);
@@ -119,10 +136,8 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
       setTestResult(res.data);
       setStations(res.data.stations || []);
       if (res.data.stations?.length > 0) setSelectedStation(res.data.stations[0]);
-      // If backend says needs_station_id — go back to credentials form to let user enter it
-      if (res.data.needs_station_id) {
-        setStep(2);
-      }
+      if (res.data.needs_station_id) setStep(2);
+      else setStep(3);
     } catch (err) {
       const msg = err.response?.data?.detail || err.message || "Connection failed. Check credentials and try again.";
       setError(msg);
@@ -140,6 +155,8 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
         station_name: selectedStation?.name || "My Solar Station",
         username: form.username,
         password: form.password,
+        key_id: form.key_id,
+        key_secret: form.key_secret,
         inverter_ip: form.inverter_ip,
         electricity_rate_pkr: parseFloat(form.electricity_rate_pkr) || 35,
         manual_power_w: parseFloat(form.manual_power_w) || 0,
@@ -202,129 +219,170 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
           {/* Step 2: Credentials */}
           {step === 2 && selectedBrand && (
             <div className="space-y-5">
-              {/* Login success + needs station ID banner */}
-              {testResult?.needs_station_id && (
-                <div className="bg-green-50 border border-green-200 rounded-2xl p-4 flex gap-3">
-                  <CheckCircle size={18} className="text-green-600 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="text-sm font-semibold text-green-800">Login verified!</p>
-                    <p className="text-sm text-green-700 mt-0.5">{testResult.message}</p>
+
+              {/* Partner-only brand — show setup guide instead of creds form */}
+              {selectedBrand.partnerOnly ? (
+                <div className="space-y-4">
+                  <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex gap-3">
+                    <AlertCircle size={20} className="text-amber-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-semibold text-amber-800 mb-1">Partner API Required</p>
+                      <p className="text-sm text-amber-700">{selectedBrand.partnerGuide}</p>
+                    </div>
+                  </div>
+                  <div className="bg-slate-50 rounded-2xl p-4 text-sm text-slate-600">
+                    <p className="font-medium mb-2">Why can't I use my app password?</p>
+                    <p className="text-xs text-slate-500">
+                      {selectedBrand.name} restricts their cloud API to verified partners to protect user data and prevent abuse.
+                      Once you get partner API credentials, come back here and we'll connect instantly.
+                    </p>
                   </div>
                 </div>
-              )}
-
-              {/* Help banner (hide if login verified) */}
-              {!testResult?.needs_station_id && (
-                <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 flex gap-3">
-                  <Info size={18} className="text-indigo-500 flex-shrink-0 mt-0.5" />
-                  <p className="text-sm text-indigo-700">{selectedBrand.help}</p>
-                </div>
-              )}
-
-              {error && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl p-3 text-sm">{error}</div>}
-
-              {/* Cloud credentials — hide once login is verified */}
-              {selectedBrand.fields.includes("username") && !testResult?.needs_station_id && (
+              ) : (
                 <>
+                  {/* Login success + needs station ID banner */}
+                  {testResult?.needs_station_id && (
+                    <div className="bg-green-50 border border-green-200 rounded-2xl p-4 flex gap-3">
+                      <CheckCircle size={18} className="text-green-600 flex-shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-sm font-semibold text-green-800">Login verified!</p>
+                        <p className="text-sm text-green-700 mt-0.5">{testResult.message}</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Help banner */}
+                  {!testResult?.needs_station_id && (
+                    <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 flex gap-3">
+                      <Info size={18} className="text-indigo-500 flex-shrink-0 mt-0.5" />
+                      <p className="text-sm text-indigo-700">{selectedBrand.help}</p>
+                    </div>
+                  )}
+
+                  {error && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl p-3 text-sm">{error}</div>}
+
+                  {/* Username + password (cloud brands) — hide once login verified */}
+                  {selectedBrand.fields.includes("username") && !testResult?.needs_station_id && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                          Email / Username <span className="text-slate-400 font-normal">({selectedBrand.platform} account)</span>
+                        </label>
+                        <input data-testid="solar-username" type="email" value={form.username}
+                          onChange={e => setForm({ ...form, username: e.target.value })}
+                          placeholder="your@email.com" className={inputClass} />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1.5">Password</label>
+                        <input data-testid="solar-password" type="password" value={form.password}
+                          onChange={e => setForm({ ...form, password: e.target.value })}
+                          placeholder="Your portal password" className={inputClass} />
+                        <p className="text-xs text-slate-400 mt-1">Stored encrypted using AES-256. Never shared.</p>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Solis / Inverex-Solis API key fields */}
+                  {selectedBrand.fields.includes("key_id") && (
+                    <>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1.5">API Key ID</label>
+                        <input data-testid="solar-key-id" value={form.key_id}
+                          onChange={e => setForm({ ...form, key_id: e.target.value })}
+                          placeholder="e.g. 2300000000xxxxxxxx" className={inputClass} />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1.5">API Secret</label>
+                        <input data-testid="solar-key-secret" type="password" value={form.key_secret}
+                          onChange={e => setForm({ ...form, key_secret: e.target.value })}
+                          placeholder="Your API secret key" className={inputClass} />
+                        <div className="mt-2 bg-sky-50 border border-sky-100 rounded-xl p-3">
+                          <p className="text-xs text-sky-700 font-medium mb-0.5">How to get your API keys:</p>
+                          <p className="text-xs text-sky-600">Log into soliscloud.com → Service → API Management → Create</p>
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* Required station ID (GoodWe) */}
+                  {selectedBrand.fields.includes("station_id_required") && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                        Power Station ID
+                        {!testResult?.needs_station_id && <span className="text-slate-400 font-normal ml-1">(verify login first)</span>}
+                      </label>
+                      <input data-testid="solar-station-id" value={form.station_id}
+                        onChange={e => setForm({ ...form, station_id: e.target.value })}
+                        placeholder="e.g. d0eac052-1234-5678-abcd-123456789012" className={inputClass} />
+                      {selectedBrand.stationHelp && (
+                        <div className="mt-2 bg-amber-50 border border-amber-100 rounded-xl p-3">
+                          <p className="text-xs text-amber-700 font-medium mb-1">How to find your Station ID:</p>
+                          <p className="text-xs text-amber-600">{selectedBrand.stationHelp}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Optional station ID */}
+                  {selectedBrand.fields.includes("station_id_optional") && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                        Plant ID <span className="text-slate-400 font-normal">(optional — auto-discovered)</span>
+                      </label>
+                      <input data-testid="solar-station-id" value={form.station_id}
+                        onChange={e => setForm({ ...form, station_id: e.target.value })}
+                        placeholder="Leave blank to use first plant" className={inputClass} />
+                      {selectedBrand.stationHelp && <p className="text-xs text-slate-400 mt-1">{selectedBrand.stationHelp}</p>}
+                    </div>
+                  )}
+
+                  {/* Fronius IP */}
+                  {selectedBrand.fields.includes("inverter_ip") && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1.5">Inverter IP Address</label>
+                      <input data-testid="solar-inverter-ip" value={form.inverter_ip}
+                        onChange={e => setForm({ ...form, inverter_ip: e.target.value })}
+                        placeholder="192.168.1.100" className={inputClass} />
+                      {selectedBrand.ipHelp && <p className="text-xs text-slate-400 mt-1">{selectedBrand.ipHelp}</p>}
+                    </div>
+                  )}
+
+                  {/* Manual entry */}
+                  {selectedBrand.fields.includes("manual") && (
+                    <>
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1.5">Current Power (W)</label>
+                          <input data-testid="manual-power" type="number" value={form.manual_power_w}
+                            onChange={e => setForm({ ...form, manual_power_w: e.target.value })}
+                            placeholder="e.g. 3500" className={inputClass} />
+                        </div>
+                        <div>
+                          <label className="block text-sm font-medium text-slate-700 mb-1.5">Today's Energy (kWh)</label>
+                          <input data-testid="manual-today" type="number" value={form.manual_today_kwh}
+                            onChange={e => setForm({ ...form, manual_today_kwh: e.target.value })}
+                            placeholder="e.g. 18.5" className={inputClass} />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1.5">Total Lifetime Energy (kWh)</label>
+                        <input data-testid="manual-total" type="number" value={form.manual_total_kwh}
+                          onChange={e => setForm({ ...form, manual_total_kwh: e.target.value })}
+                          placeholder="e.g. 4250" className={inputClass} />
+                      </div>
+                    </>
+                  )}
+
+                  {/* Electricity rate */}
                   <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                      Email / Username
-                      <span className="text-slate-400 font-normal ml-1">({selectedBrand.platform} account)</span>
-                    </label>
-                    <input data-testid="solar-username" type="email" value={form.username}
-                      onChange={e => setForm({ ...form, username: e.target.value })}
-                      placeholder="your@email.com" className={inputClass} />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">Password</label>
-                    <input data-testid="solar-password" type="password" value={form.password}
-                      onChange={e => setForm({ ...form, password: e.target.value })}
-                      placeholder="Your portal password" className={inputClass} />
-                    <p className="text-xs text-slate-400 mt-1">Stored encrypted using AES-256. Never shared.</p>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">Electricity Rate (PKR per kWh)</label>
+                    <input data-testid="electricity-rate" type="number" value={form.electricity_rate_pkr}
+                      onChange={e => setForm({ ...form, electricity_rate_pkr: e.target.value })}
+                      placeholder="35" className={inputClass} />
+                    <p className="text-xs text-slate-400 mt-1">Used to calculate PKR savings. Pakistan avg: PKR 35/kWh</p>
                   </div>
                 </>
               )}
-
-              {/* Required station ID for GoodWe */}
-              {selectedBrand.fields.includes("station_id_required") && (
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                    Power Station ID
-                    {!testResult?.needs_station_id && <span className="text-slate-400 font-normal ml-1">(enter after verifying login)</span>}
-                  </label>
-                  <input data-testid="solar-station-id" value={form.station_id}
-                    onChange={e => setForm({ ...form, station_id: e.target.value })}
-                    placeholder="e.g. d0eac052-1234-5678-abcd-123456789012"
-                    className={inputClass} />
-                  {selectedBrand.stationHelp && (
-                    <div className="mt-2 bg-amber-50 border border-amber-100 rounded-xl p-3">
-                      <p className="text-xs text-amber-700 font-medium mb-1">How to find your Station ID:</p>
-                      <p className="text-xs text-amber-600">{selectedBrand.stationHelp}</p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Optional station ID (other brands) */}
-              {selectedBrand.fields.includes("station_id_optional") && (
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                    Power Station ID <span className="text-slate-400 font-normal">(optional — auto-discovered)</span>
-                  </label>
-                  <input data-testid="solar-station-id" value={form.station_id}
-                    onChange={e => setForm({ ...form, station_id: e.target.value })}
-                    placeholder="Leave blank to auto-discover" className={inputClass} />
-                  {selectedBrand.stationHelp && (
-                    <p className="text-xs text-slate-400 mt-1">{selectedBrand.stationHelp}</p>
-                  )}
-                </div>
-              )}
-
-              {/* Fronius IP */}
-              {selectedBrand.fields.includes("inverter_ip") && (
-                <div>
-                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Inverter IP Address</label>
-                  <input data-testid="solar-inverter-ip" value={form.inverter_ip}
-                    onChange={e => setForm({ ...form, inverter_ip: e.target.value })}
-                    placeholder="192.168.1.100" className={inputClass} />
-                  {selectedBrand.ipHelp && <p className="text-xs text-slate-400 mt-1">{selectedBrand.ipHelp}</p>}
-                </div>
-              )}
-
-              {/* Manual entry */}
-              {selectedBrand.fields.includes("manual") && (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1.5">Current Power (W)</label>
-                      <input data-testid="manual-power" type="number" value={form.manual_power_w}
-                        onChange={e => setForm({ ...form, manual_power_w: e.target.value })}
-                        placeholder="e.g. 3500" className={inputClass} />
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-slate-700 mb-1.5">Today's Energy (kWh)</label>
-                      <input data-testid="manual-today" type="number" value={form.manual_today_kwh}
-                        onChange={e => setForm({ ...form, manual_today_kwh: e.target.value })}
-                        placeholder="e.g. 18.5" className={inputClass} />
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">Total Lifetime Energy (kWh)</label>
-                    <input data-testid="manual-total" type="number" value={form.manual_total_kwh}
-                      onChange={e => setForm({ ...form, manual_total_kwh: e.target.value })}
-                      placeholder="e.g. 4250" className={inputClass} />
-                  </div>
-                </>
-              )}
-
-              {/* Electricity rate */}
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1.5">Electricity Rate (PKR per kWh)</label>
-                <input data-testid="electricity-rate" type="number" value={form.electricity_rate_pkr}
-                  onChange={e => setForm({ ...form, electricity_rate_pkr: e.target.value })}
-                  placeholder="35" className={inputClass} />
-                <p className="text-xs text-slate-400 mt-1">Used to calculate your PKR savings. Pakistan average: PKR 35/kWh</p>
-              </div>
             </div>
           )}
 
@@ -425,11 +483,11 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
               <button data-testid="test-connection-btn"
                 onClick={handleTest}
                 disabled={
-                  // If login verified, require station_id before re-testing
+                  selectedBrand?.partnerOnly ||
                   (testResult?.needs_station_id && !form.station_id) ||
-                  // Otherwise require at least username or IP
-                  (!testResult?.needs_station_id && !form.username && !form.inverter_ip
-                    && selectedBrand?.id !== "manual" && selectedBrand?.id !== "inverex")
+                  (!testResult?.needs_station_id &&
+                    !form.username && !form.inverter_ip && !form.key_id &&
+                    selectedBrand?.id !== "manual")
                 }
                 className="flex items-center gap-2 px-8 py-3 bg-indigo-600 text-white font-semibold rounded-full hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-40 text-sm">
                 <Wifi size={16} />
