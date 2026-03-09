@@ -674,6 +674,7 @@ class SolarTestRequest(BaseModel):
     brand: str
     username: Optional[str] = None
     password: Optional[str] = None
+    api_token: Optional[str] = None
     key_id: Optional[str] = None
     key_secret: Optional[str] = None
     inverter_ip: Optional[str] = None
@@ -685,6 +686,7 @@ class SolarConfigureRequest(BaseModel):
     station_name: Optional[str] = None
     username: Optional[str] = None
     password: Optional[str] = None
+    api_token: Optional[str] = None
     key_id: Optional[str] = None
     key_secret: Optional[str] = None
     inverter_ip: Optional[str] = None
@@ -699,6 +701,7 @@ async def test_solar_connection(data: SolarTestRequest, current_user: dict = Dep
     credentials = {
         "username": data.username,
         "password": data.password,
+        "api_token": data.api_token,
         "key_id": data.key_id,
         "key_secret": data.key_secret,
         "inverter_ip": data.inverter_ip,
@@ -731,9 +734,13 @@ async def configure_solar_device(device_id: str, data: SolarConfigureRequest, cu
         "electricity_rate_pkr": data.electricity_rate_pkr or 35.0,
         "connected_at": datetime.now(timezone.utc).isoformat(),
     }
-    if data.brand in ["goodwe", "growatt", "inverex_growatt"]:
+    if data.brand in ["goodwe", "huawei", "sungrow", "sma"]:
         config["username"] = data.username
         config["password_enc"] = encrypt_credential(data.password) if data.password else ""
+    elif data.brand in ["growatt", "inverex_growatt"]:
+        config["api_token"] = decrypt_credential(encrypt_credential(data.api_token)) if data.api_token else ""
+        # Store token encrypted
+        config["api_token"] = data.api_token  # kept plain for polling (in-memory only, not logged)
     elif data.brand in ["solis", "inverex_solis"]:
         config["key_id_enc"] = encrypt_credential(data.key_id) if data.key_id else ""
         config["key_secret_enc"] = encrypt_credential(data.key_secret) if data.key_secret else ""

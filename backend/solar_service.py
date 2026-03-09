@@ -138,54 +138,41 @@ class SEMSConnector:
 # ===================== GROWATT SHINEMONITOR =====================
 
 class GrowattConnector:
-    """Growatt ShineMonitor — uses growattServer library (PyPI)"""
+    """Growatt — OpenApiV1 with API Token (username/password login deprecated by Growatt in 2025)"""
 
-    def __init__(self, username: str, password: str):
-        self.username = username
-        self.password = password
+    def __init__(self, api_token: str):
+        self.api_token = api_token
         self._api = None
-        self._user_id = None
 
     def _get_api(self):
         if self._api is None:
             import growattServer
-            self._api = growattServer.GrowattApi(add_random_user_id=True)
+            self._api = growattServer.OpenApiV1(token=self.api_token)
         return self._api
-
-    def login(self) -> dict:
-        api = self._get_api()
-        result = api.login(self.username, self.password)
-        if not result or result.get("error_code", 1) != 0:
-            msg = result.get("error_msg", "Login failed") if result else "No response from Growatt"
-            raise ValueError(f"Growatt login failed: {msg}")
-        self._user_id = result.get("user", {}).get("id") or result.get("userId", "")
-        logger.info(f"Growatt login OK — user_id: {self._user_id}")
-        return result
 
     def get_plants(self) -> list:
         api = self._get_api()
-        if not self._user_id:
-            self.login()
-        plants = api.plant_list(self._user_id)
+        result = api.plant_list()
+        plants = result.get("plants") or result.get("data") or []
         if not plants:
-            raise ValueError("No plants found on this Growatt account")
+            raise ValueError("No plants found. Verify your Growatt API token is correct.")
         return plants
 
     def get_plant_data(self, plant_id: str) -> dict:
         api = self._get_api()
-        if not self._user_id:
-            self.login()
         devices = api.device_list(plant_id)
-        if not devices:
-            raise ValueError(f"No devices found in plant {plant_id}")
+        device_list = devices.get("devices") or devices.get("data") or []
+        if not device_list:
+            raise ValueError(f"No devices found in Growatt plant {plant_id}")
 
-        device = devices[0]
+        device = device_list[0]
         device_sn = device.get("deviceSn") or device.get("sn") or device.get("id", "")
         device_type = (device.get("deviceType") or "").lower()
+        detail = {}
 
         try:
             if "mix" in device_type or "sph" in device_type:
-                detail = api.mix_info(device_sn, plant_id=plant_id)
+                detail = api.mix_detail(device_sn, plant_id=plant_id) or {}
                 pac = fval(detail.get("pactogrid") or detail.get("pac") or detail.get("ppv"))
                 eday = fval(detail.get("etoday") or detail.get("epvtoday"))
                 etotal = fval(detail.get("etotal") or detail.get("epvtotal"))
@@ -194,8 +181,18 @@ class GrowattConnector:
                 grid_export = fval(detail.get("pactogrid"))
                 temp = fval(detail.get("tempperature") or detail.get("temperature"))
                 model = detail.get("deviceModel") or device.get("model", "Growatt Mix")
+            elif "tlx" in device_type or "min" in device_type:
+                detail = api.tlx_detail(device_sn) or {}
+                pac = fval(detail.get("pac") or detail.get("power"))
+                eday = fval(detail.get("etoday") or detail.get("eactoday"))
+                etotal = fval(detail.get("etotal") or detail.get("eactotal"))
+                soc = 0
+                grid_import = 0
+                grid_export = pac
+                temp = fval(detail.get("temperature") or detail.get("tempperature"))
+                model = detail.get("deviceModel") or device.get("model", "Growatt TLX/MIN")
             else:
-                detail = api.inverter_detail(device_sn)
+                detail = api.inverter_detail(device_sn) or {}
                 pac = fval(detail.get("pac") or detail.get("power"))
                 eday = fval(detail.get("etoday") or detail.get("eactoday"))
                 etotal = fval(detail.get("etotal") or detail.get("eactotal"))
@@ -205,7 +202,7 @@ class GrowattConnector:
                 temp = fval(detail.get("temperature") or detail.get("tempperature"))
                 model = detail.get("deviceModel") or device.get("model", "Growatt Inverter")
         except Exception as e:
-            logger.warning(f"Growatt device detail error: {e} — using device list data")
+            logger.warning(f"Growatt device detail error: {e} — falling back to device list data")
             pac = fval(device.get("power") or device.get("pac"))
             eday = fval(device.get("eToday") or device.get("etoday"))
             etotal = fval(device.get("eTotal") or device.get("etotal"))
@@ -213,7 +210,6 @@ class GrowattConnector:
             grid_export = pac
             temp = fval(device.get("temperature"))
             model = device.get("model", "Growatt Inverter")
-            detail = {}
 
         pv_strings = []
         for i in range(1, 5):
@@ -406,8 +402,7 @@ def test_connection_sync(brand: str, credentials: dict) -> dict:
                 }
 
         elif brand == "growatt":
-            connector = GrowattConnector(credentials["username"], credentials["password"])
-            login_res = connector.login()
+            connector = GrowattConnector(credentials["api_token"])
             plants = connector.get_plants()
             plant = plants[0]
             plant_id = str(plant.get("id") or plant.get("plantId") or "")
@@ -440,16 +435,12 @@ def test_connection_sync(brand: str, credentials: dict) -> dict:
             }
 
         elif brand == "inverex_growatt":
-            # Inverex (Growatt-based) — same as Growatt
-            connector = GrowattConnector(credentials["username"], credentials["password"])
-            connector.login()
+            connector = GrowattConnector(credentials["api_token"])
             plants = connector.get_plants()
             plant = plants[0]
-            plant_id = str(plant.get("id") or plant.get("plantId") or "")
-            plant_name = plant.get("plantName") or plant.get("name") or f"Plant {plant_id}"
             return {
                 "success": True,
-                "message": f"Connected to Inverex (Growatt)! Found '{plant_name}'",
+                "message": f"Connected to Inverex (Growatt)! Found '{plant.get('plantName', 'Plant')}'",
                 "stations": [{"id": str(p.get("id") or p.get("plantId", "")), "name": p.get("plantName") or p.get("name", "Plant"), "capacity": 0} for p in plants[:5]],
             }
 
@@ -495,7 +486,11 @@ def test_connection_sync(brand: str, credentials: dict) -> dict:
     except requests.exceptions.HTTPError as e:
         raise ValueError(f"HTTP {e.response.status_code} from {brand} API: {e.response.text[:200]}")
     except Exception as e:
-        raise ValueError(f"Unexpected error: {str(e)}")
+        msg = str(e)
+        # Growatt V1 API errors come as GrowattV1ApiError with useful message
+        if "plant list" in msg.lower() or "growatt" in msg.lower() or "token" in msg.lower():
+            raise ValueError(f"Growatt API error: {msg}. Check your API token is correct and not expired.")
+        raise ValueError(f"Unexpected error: {msg}")
 
 
 def fetch_solar_live_data(connection_config: dict) -> dict:
@@ -511,11 +506,7 @@ def fetch_solar_live_data(connection_config: dict) -> dict:
         return _normalize(c.get_station_data(connection_config["station_id"]))
 
     elif brand == "growatt" or brand == "inverex_growatt":
-        c = GrowattConnector(
-            connection_config["username"],
-            decrypt_credential(connection_config["password_enc"])
-        )
-        c.login()
+        c = GrowattConnector(connection_config["api_token"])
         return _normalize(c.get_plant_data(connection_config["station_id"]))
 
     elif brand == "solis" or brand == "inverex_solis":

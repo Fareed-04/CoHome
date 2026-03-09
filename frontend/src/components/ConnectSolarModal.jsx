@@ -17,8 +17,9 @@ const BRANDS = [
     id: "growatt", name: "Growatt", platform: "ShineMonitor", type: "cloud",
     badge: "Live", badgeColor: "bg-green-100 text-green-700",
     logo: "🌱",
-    help: "Uses your Growatt ShineMonitor account (server.growatt.com). Auto-discovers your plants.",
-    fields: ["username", "password"],
+    help: "Growatt deprecated username/password login in 2025. You now need a free API Token from the ShinePhone app.",
+    fields: ["api_token"],
+    tokenHelp: "ShinePhone app → Me → Account → API Token → Copy the 32-character token",
   },
   {
     id: "solis", name: "Solis", platform: "SolisCloud", type: "cloud",
@@ -40,8 +41,9 @@ const BRANDS = [
     id: "inverex_growatt", name: "Inverex (Growatt)", platform: "ShineMonitor", type: "cloud",
     badge: "🇵🇰 Local", badgeColor: "bg-emerald-100 text-emerald-700",
     logo: "🇵🇰",
-    help: "For Inverex units that use Growatt hardware. Use your Growatt/ShineMonitor account credentials.",
-    fields: ["username", "password"],
+    help: "For Inverex units that use Growatt hardware. Requires a free API Token from the ShinePhone app.",
+    fields: ["api_token"],
+    tokenHelp: "ShinePhone app → Me → Account → API Token → Copy the 32-character token",
   },
   {
     id: "inverex_solis", name: "Inverex (Solis)", platform: "SolisCloud", type: "cloud",
@@ -112,6 +114,7 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
   const [brand, setBrand] = useState(null);
   const [form, setForm] = useState({
     username: "", password: "",
+    api_token: "",
     key_id: "", key_secret: "",
     inverter_ip: "", station_id: "",
     electricity_rate_pkr: "35",
@@ -155,6 +158,7 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
         station_name: selectedStation?.name || "My Solar Station",
         username: form.username,
         password: form.password,
+        api_token: form.api_token,
         key_id: form.key_id,
         key_secret: form.key_secret,
         inverter_ip: form.inverter_ip,
@@ -260,6 +264,22 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
                   )}
 
                   {error && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl p-3 text-sm">{error}</div>}
+
+                  {/* Growatt / Inverex API Token */}
+                  {selectedBrand.fields.includes("api_token") && (
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1.5">Growatt API Token</label>
+                      <input data-testid="solar-api-token" value={form.api_token}
+                        onChange={e => setForm({ ...form, api_token: e.target.value })}
+                        placeholder="Paste your 32-character API token" className={inputClass} />
+                      {selectedBrand.tokenHelp && (
+                        <div className="mt-2 bg-green-50 border border-green-100 rounded-xl p-3">
+                          <p className="text-xs text-green-700 font-medium mb-0.5">How to get your API token:</p>
+                          <p className="text-xs text-green-600">{selectedBrand.tokenHelp}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Username + password (cloud brands) — hide once login verified */}
                   {selectedBrand.fields.includes("username") && !testResult?.needs_station_id && (
@@ -486,7 +506,7 @@ export default function ConnectSolarModal({ device, onClose, onConnected }) {
                   selectedBrand?.partnerOnly ||
                   (testResult?.needs_station_id && !form.station_id) ||
                   (!testResult?.needs_station_id &&
-                    !form.username && !form.inverter_ip && !form.key_id &&
+                    !form.username && !form.inverter_ip && !form.key_id && !form.api_token &&
                     selectedBrand?.id !== "manual")
                 }
                 className="flex items-center gap-2 px-8 py-3 bg-indigo-600 text-white font-semibold rounded-full hover:bg-indigo-700 transition-all active:scale-95 disabled:opacity-40 text-sm">
