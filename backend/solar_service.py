@@ -153,6 +153,7 @@ class GrowattConnector:
     def get_plants(self) -> list:
         api = self._get_api()
         result = api.plant_list()
+        logger.info(f"Growatt plant_list raw: {str(result)[:500]}")
         plants = result.get("plants") or result.get("data") or []
         if not plants:
             raise ValueError("No plants found. Verify your Growatt API token is correct.")
@@ -160,56 +161,75 @@ class GrowattConnector:
 
     def get_plant_data(self, plant_id: str) -> dict:
         api = self._get_api()
-        devices = api.device_list(plant_id)
-        device_list = devices.get("devices") or devices.get("data") or []
+        # If no plant_id stored, auto-discover the first plant
+        if not plant_id:
+            plants = self.get_plants()
+            plant_id = str(plants[0].get("id", ""))
+            logger.info(f"Growatt: auto-discovered plant_id={plant_id}")
+
+        # CRITICAL: device_list requires int plant_id
+        devices_resp = api.device_list(int(plant_id))
+        device_list = (devices_resp.get("data") or {}).get("devices") or []
         if not device_list:
             raise ValueError(f"No devices found in Growatt plant {plant_id}")
 
         device = device_list[0]
-        device_sn = device.get("deviceSn") or device.get("sn") or device.get("id", "")
-        device_type = (device.get("deviceType") or "").lower()
+        # Correct key per Growatt V1 API docs
+        device_sn = device.get("device_sn") or device.get("deviceSn") or ""
+        # device type is int: 1=inverter, 5=sph, 6=spa, 7=min/TLX
+        device_type = int(device.get("type") or device.get("device_type") or 0)
         detail = {}
+        logger.info(f"Growatt device: sn={device_sn} type={device_type} status={device.get('status')}")
 
         try:
-            if "mix" in device_type or "sph" in device_type:
-                detail = api.mix_detail(device_sn, plant_id=plant_id) or {}
-                pac = fval(detail.get("pactogrid") or detail.get("pac") or detail.get("ppv"))
-                eday = fval(detail.get("etoday") or detail.get("epvtoday"))
-                etotal = fval(detail.get("etotal") or detail.get("epvtotal"))
-                soc = fval(detail.get("SOC") or detail.get("soc"))
-                grid_import = fval(detail.get("pactouse") or detail.get("pacToUser"))
-                grid_export = fval(detail.get("pactogrid"))
-                temp = fval(detail.get("tempperature") or detail.get("temperature"))
-                model = detail.get("deviceModel") or device.get("model", "Growatt Mix")
-            elif "tlx" in device_type or "min" in device_type:
+            if device_type in [5, 6]:  # SPH / SPA — Mix-type with battery
+                detail = api.mix_info(device_sn, plant_id=plant_id) or {}
+                pac = fval(detail.get("pac") or detail.get("ppv"))
+                eday = fval(detail.get("epvToday") or detail.get("etoday"))
+                etotal = fval(detail.get("epvTotal") or detail.get("etotal"))
+                soc = fval(detail.get("capacity") or detail.get("soc"))
+                grid_import = fval(detail.get("pacToUser") or detail.get("pactouse"))
+                grid_export = fval(detail.get("pacToGrid") or detail.get("pactogrid"))
+                temp = fval(detail.get("temperature") or detail.get("tempperature"))
+                model = device.get("model", "Growatt SPH")
+
+            elif device_type == 7:  # MIN / TLX
                 detail = api.tlx_detail(device_sn) or {}
-                pac = fval(detail.get("pac") or detail.get("power"))
-                eday = fval(detail.get("etoday") or detail.get("eactoday"))
-                etotal = fval(detail.get("etotal") or detail.get("eactotal"))
+                d = detail.get("data") or detail  # handle nested data key
+                pac = fval(d.get("pac") or d.get("ppv"))
+                eday = fval(d.get("eacToday") or d.get("eday") or d.get("etoday"))
+                etotal = fval(d.get("eacTotal") or d.get("etotal"))
                 soc = 0
                 grid_import = 0
                 grid_export = pac
-                temp = fval(detail.get("temperature") or detail.get("tempperature"))
-                model = detail.get("deviceModel") or device.get("model", "Growatt TLX/MIN")
-            else:
+                temp = fval(d.get("temperature") or d.get("tempperature"))
+                model = device.get("model", "Growatt MIN/TLX")
+                detail = d  # use for vac/fac/vpv extraction below
+
+            else:  # type 1 = standard inverter (most common)
                 detail = api.inverter_detail(device_sn) or {}
-                pac = fval(detail.get("pac") or detail.get("power"))
-                eday = fval(detail.get("etoday") or detail.get("eactoday"))
-                etotal = fval(detail.get("etotal") or detail.get("eactotal"))
+                d = detail.get("data") or detail
+                pac = fval(d.get("pac") or d.get("ppv"))
+                eday = fval(d.get("eday1") or d.get("eday") or d.get("epvToday"))
+                etotal = fval(d.get("etotal") or d.get("epvTotal"))
                 soc = 0
                 grid_import = 0
                 grid_export = pac
-                temp = fval(detail.get("temperature") or detail.get("tempperature"))
-                model = detail.get("deviceModel") or device.get("model", "Growatt Inverter")
+                temp = fval(d.get("temperature") or d.get("tempperature"))
+                model = device.get("model", "Growatt Inverter")
+                detail = d
+
         except Exception as e:
-            logger.warning(f"Growatt device detail error: {e} — falling back to device list data")
-            pac = fval(device.get("power") or device.get("pac"))
-            eday = fval(device.get("eToday") or device.get("etoday"))
-            etotal = fval(device.get("eTotal") or device.get("etotal"))
+            logger.warning(f"Growatt detail call failed ({e}) — using device list fields")
+            pac = fval(device.get("pac") or device.get("power"))
+            eday = fval(device.get("eday") or device.get("eToday") or device.get("epvToday"))
+            etotal = fval(device.get("etotal") or device.get("eTotal") or device.get("epvTotal"))
             soc = grid_import = 0
             grid_export = pac
-            temp = fval(device.get("temperature"))
+            temp = 0
             model = device.get("model", "Growatt Inverter")
+
+        logger.info(f"Growatt parsed: pac={pac} eday={eday} etotal={etotal} soc={soc}")
 
         pv_strings = []
         for i in range(1, 5):
@@ -219,21 +239,21 @@ class GrowattConnector:
                 pv_strings.append({"string": i, "voltage_v": v, "current_a": a, "power_w": v * a})
 
         return {
-            "is_online": device.get("status", 0) not in [0, "0", "offline"],
+            "is_online": int(device.get("status", 0)) not in [0, 3],  # 1=online, 0=offline, 3=fault
             "current_power_w": pac * 1000 if pac < 100 else pac,
             "today_energy_kwh": eday,
             "total_energy_kwh": etotal,
-            "grid_voltage_v": fval(detail.get("vac1") or device.get("vac") or 0),
-            "grid_frequency_hz": fval(detail.get("fac1", 0)),
+            "grid_voltage_v": fval(detail.get("vac1") or detail.get("vac") or 0),
+            "grid_frequency_hz": fval(detail.get("fac1") or detail.get("fac") or 0),
             "temperature_c": temp,
-            "capacity_kw": fval(device.get("capacity") or device.get("nominalPower")),
+            "capacity_kw": fval(device.get("peak_power_actual") or device.get("capacity") or 0),
             "battery_soc": soc,
-            "grid_import_w": grid_import * 1000 if grid_import < 100 else grid_import,
-            "grid_export_w": grid_export * 1000 if grid_export < 100 else grid_export,
+            "grid_import_w": grid_import * 1000 if 0 < grid_import < 100 else grid_import,
+            "grid_export_w": grid_export * 1000 if 0 < grid_export < 100 else grid_export,
             "pv_strings": pv_strings,
             "inverter_sn": device_sn,
             "model": model,
-            "station_name": device.get("plantName") or f"Plant {plant_id}",
+            "station_name": device.get("name") or device.get("plantName") or f"Plant {plant_id}",
         }
 
 
@@ -406,11 +426,16 @@ def test_connection_sync(brand: str, credentials: dict) -> dict:
             plants = connector.get_plants()
             plant = plants[0]
             plant_id = str(plant.get("id") or plant.get("plantId") or "")
-            plant_name = plant.get("plantName") or plant.get("name") or f"Plant {plant_id}"
+            plant_name = plant.get("name") or plant.get("plantName") or f"Plant {plant_id}"
             return {
                 "success": True,
                 "message": f"Connected to Growatt! Found {len(plants)} plant(s). Using: '{plant_name}'",
-                "stations": [{"id": str(p.get("id") or p.get("plantId", "")), "name": p.get("plantName") or p.get("name", "Plant"), "capacity": fval(p.get("nominalPower") or p.get("capacity"))} for p in plants[:5]],
+                "stations": [
+                    {"id": str(p.get("id") or p.get("plantId", "")),
+                     "name": p.get("name") or p.get("plantName") or "Plant",
+                     "capacity": fval(p.get("peak_power_actual") or p.get("nominalPower") or p.get("capacity"))}
+                    for p in plants[:5]
+                ],
             }
 
         elif brand == "solis":
@@ -507,7 +532,8 @@ def fetch_solar_live_data(connection_config: dict) -> dict:
 
     elif brand == "growatt" or brand == "inverex_growatt":
         c = GrowattConnector(connection_config["api_token"])
-        return _normalize(c.get_plant_data(connection_config["station_id"]))
+        data = _normalize(c.get_plant_data(connection_config.get("station_id", "")))
+        return data
 
     elif brand == "solis" or brand == "inverex_solis":
         c = SolisConnector(
