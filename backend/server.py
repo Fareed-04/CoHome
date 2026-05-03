@@ -2,7 +2,6 @@ from fastapi import FastAPI, APIRouter, HTTPException, Request, Depends
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 import secrets
@@ -14,17 +13,89 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
+
+from pg_store import (
+    init_pg_pool,
+    close_pg_pool,
+    pg_pool,
+    session_find_by_token,
+    user_find_by_id,
+    session_insert,
+    session_delete_by_token,
+    home_ids_for_user,
+    homes_list_for_user,
+    home_find_for_member,
+    home_find_owned,
+    home_insert,
+    home_update_fields,
+    home_delete,
+    home_patch_members_add,
+    home_patch_members_remove,
+    home_by_id,
+    devices_insert_many,
+    devices_list_by_home,
+    device_find,
+    device_find_solar,
+    device_insert_one,
+    device_drop_settings_keys,
+    device_settings_merge_nested,
+    device_delete,
+    device_set_field,
+    device_set_status,
+    alerts_list_for_homes,
+    alerts_list_home,
+    alert_find,
+    alert_mark_read,
+    alerts_mark_all_read,
+    alert_delete,
+    alert_insert,
+    alerts_count_unread,
+    solar_readings_since_select,
+    solar_readings_list,
+    solar_reading_insert,
+    user_find_by_email,
+    user_insert,
+    user_update_google_profile,
+    user_set_subscription,
+    devices_find_solar_with_connection,
+)
 from solar_service import (
     test_connection_sync, fetch_solar_live_data,
     encrypt_credential, decrypt_credential
 )
+from supabase_env import apply_supabase_env_aliases
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / ".env")
+# Local overrides (same idea as CRA `.env.local`); `DATABASE_*` and secrets often live here.
+load_dotenv(ROOT_DIR / ".env.local", override=True)
+apply_supabase_env_aliases()
 
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# Keys removed under device.settings before reconnecting solar (Mongo $unset equivalents)
+_SOLAR_STALE_FIELDS = [
+    "current_power_w",
+    "today_generation_kwh",
+    "total_energy_kwh",
+    "grid_voltage_v",
+    "grid_frequency_hz",
+    "temperature_c",
+    "pv_strings",
+    "capacity_kw",
+    "inverter_model",
+    "inverter_sn",
+    "monthly_savings_pkr",
+    "last_sync",
+    "last_sync_error",
+    "battery_soc",
+    "grid_import_w",
+    "grid_export_w",
+]
+
+_SOLAR_DISCONNECT_FIELDS = _SOLAR_STALE_FIELDS + [
+    "connection_config",
+    "connection_brand",
+    "connection_status",
+]
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
@@ -40,6 +111,15 @@ app.add_middleware(
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+def _env_bool(key: str, default: str = "false") -> bool:
+    return os.environ.get(key, default).lower() in ("1", "true", "yes")
+
+
+# SameSite=None + Secure breaks local http:// dev (cookies are dropped). Use defaults for localhost;
+# set COOKIE_SECURE=true behind HTTPS when frontend and API are on different HTTPS sites.
+_COOKIE_SECURE = _env_bool("COOKIE_SECURE", "false")
+_COOKIE_SAMESITE = "none" if _COOKIE_SECURE else "lax"
+
 # ===================== HELPERS =====================
 
 def generate_id(prefix: str) -> str:
@@ -54,31 +134,27 @@ async def get_current_user(request: Request):
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+    session = await session_find_by_token(pg_pool(), token)
     if not session:
         raise HTTPException(status_code=401, detail="Invalid session")
 
     expires_at = session["expires_at"]
     if isinstance(expires_at, str):
-        expires_at = datetime.fromisoformat(expires_at)
+        expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
     if expires_at.tzinfo is None:
         expires_at = expires_at.replace(tzinfo=timezone.utc)
     if expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=401, detail="Session expired")
 
-    user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
+    user = await user_find_by_id(pg_pool(), session["user_id"])
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
 async def create_session(user_id: str) -> str:
     token = secrets.token_urlsafe(32)
-    await db.user_sessions.insert_one({
-        "session_token": token,
-        "user_id": user_id,
-        "expires_at": datetime.now(timezone.utc) + timedelta(days=7),
-        "created_at": datetime.now(timezone.utc)
-    })
+    now = datetime.now(timezone.utc)
+    await session_insert(pg_pool(), token, user_id, now + timedelta(days=7), now)
     return token
 
 def make_session_response(data: dict, token: str) -> JSONResponse:
@@ -88,18 +164,14 @@ def make_session_response(data: dict, token: str) -> JSONResponse:
         value=token,
         max_age=7 * 24 * 3600,
         httponly=True,
-        secure=True,
-        samesite="none",
-        path="/"
+        secure=_COOKIE_SECURE,
+        samesite=_COOKIE_SAMESITE,
+        path="/",
     )
     return resp
 
 async def get_user_home_ids(user_id: str) -> List[str]:
-    homes = await db.homes.find(
-        {"$or": [{"owner_id": user_id}, {"member_ids": user_id}]},
-        {"_id": 0, "home_id": 1}
-    ).to_list(100)
-    return [h["home_id"] for h in homes]
+    return await home_ids_for_user(pg_pool(), user_id)
 
 async def seed_home_devices(home_id: str, owner_id: str):
     now = datetime.now(timezone.utc).isoformat()
@@ -130,8 +202,8 @@ async def seed_home_devices(home_id: str, owner_id: str):
          "settings": {"current_temp": 35, "target_temp": 55, "schedule_enabled": False,
                       "schedule_on": "06:30", "schedule_off": "08:00"}, "created_at": now},
     ]
-    await db.devices.insert_many(devices)
-    await db.alerts.insert_one({
+    await devices_insert_many(pg_pool(), devices)
+    await alert_insert(pg_pool(), {
         "alert_id": generate_id("alert"),
         "home_id": home_id, "device_id": None,
         "type": "system", "severity": "info",
@@ -186,7 +258,7 @@ class AlertMarkRead(BaseModel):
 
 @api_router.post("/auth/register")
 async def register(data: UserRegister):
-    existing = await db.users.find_one({"email": data.email.lower()}, {"_id": 0})
+    existing = await user_find_by_email(pg_pool(), data.email.lower())
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
 
@@ -203,14 +275,14 @@ async def register(data: UserRegister):
         "subscription": "free",
         "created_at": now
     }
-    await db.users.insert_one(user)
+    await user_insert(pg_pool(), user)
     token = await create_session(user_id)
     user_response = {k: v for k, v in user.items() if k not in ["password_hash", "_id"]}
     return make_session_response({"user": user_response, "token": token}, token)
 
 @api_router.post("/auth/login")
 async def login(data: UserLogin):
-    user = await db.users.find_one({"email": data.email.lower()}, {"_id": 0})
+    user = await user_find_by_email(pg_pool(), data.email.lower())
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -236,16 +308,17 @@ async def google_session(data: GoogleSessionExchange):
         raise HTTPException(status_code=503, detail="Auth service unavailable")
 
     email = oauth_data.get("email", "").lower()
-    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    existing = await user_find_by_email(pg_pool(), email)
 
     if existing:
         user_id = existing["user_id"]
-        await db.users.update_one(
-            {"user_id": user_id},
-            {"$set": {"name": oauth_data.get("name", existing["name"]),
-                      "picture": oauth_data.get("picture", existing.get("picture"))}}
+        await user_update_google_profile(
+            pg_pool(),
+            user_id,
+            oauth_data.get("name", existing["name"]),
+            oauth_data.get("picture", existing.get("picture")),
         )
-        user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+        user = await user_find_by_id(pg_pool(), user_id)
     else:
         user_id = generate_id("user")
         now = datetime.now(timezone.utc).isoformat()
@@ -259,7 +332,7 @@ async def google_session(data: GoogleSessionExchange):
             "subscription": "free",
             "created_at": now
         }
-        await db.users.insert_one(user)
+        await user_insert(pg_pool(), user)
 
     token = await create_session(user_id)
     user_response = {k: v for k, v in user.items() if k not in ["password_hash", "_id"]}
@@ -278,20 +351,21 @@ async def logout(request: Request):
         if auth_header.startswith("Bearer "):
             token = auth_header[7:]
     if token:
-        await db.user_sessions.delete_one({"session_token": token})
+        await session_delete_by_token(pg_pool(), token)
     resp = JSONResponse(content={"message": "Logged out"})
-    resp.delete_cookie(key="session_token", path="/", secure=True, samesite="none")
+    resp.delete_cookie(
+        key="session_token",
+        path="/",
+        secure=_COOKIE_SECURE,
+        samesite=_COOKIE_SAMESITE,
+    )
     return resp
 
 # ===================== HOME ROUTES =====================
 
 @api_router.get("/homes")
 async def get_homes(current_user: dict = Depends(get_current_user)):
-    homes = await db.homes.find(
-        {"$or": [{"owner_id": current_user["user_id"]}, {"member_ids": current_user["user_id"]}]},
-        {"_id": 0}
-    ).to_list(100)
-    return homes
+    return await homes_list_for_user(pg_pool(), current_user["user_id"])
 
 @api_router.post("/homes")
 async def create_home(data: HomeCreate, current_user: dict = Depends(get_current_user)):
@@ -307,39 +381,34 @@ async def create_home(data: HomeCreate, current_user: dict = Depends(get_current
         "members": [],
         "created_at": now
     }
-    await db.homes.insert_one(home)
+    await home_insert(pg_pool(), home)
     await seed_home_devices(home_id, current_user["user_id"])
     return {k: v for k, v in home.items() if k != "_id"}
 
 @api_router.get("/homes/{home_id}")
 async def get_home(home_id: str, current_user: dict = Depends(get_current_user)):
-    home = await db.homes.find_one(
-        {"home_id": home_id, "$or": [{"owner_id": current_user["user_id"]}, {"member_ids": current_user["user_id"]}]},
-        {"_id": 0}
-    )
+    home = await home_find_for_member(pg_pool(), home_id, current_user["user_id"])
     if not home:
         raise HTTPException(status_code=404, detail="Home not found")
     return home
 
 @api_router.put("/homes/{home_id}")
 async def update_home(home_id: str, data: HomeUpdate, current_user: dict = Depends(get_current_user)):
-    home = await db.homes.find_one({"home_id": home_id, "owner_id": current_user["user_id"]}, {"_id": 0})
+    home = await home_find_owned(pg_pool(), home_id, current_user["user_id"])
     if not home:
         raise HTTPException(status_code=404, detail="Home not found")
     updates = {k: v for k, v in data.model_dump().items() if v is not None}
     if updates:
-        await db.homes.update_one({"home_id": home_id}, {"$set": updates})
-    updated = await db.homes.find_one({"home_id": home_id}, {"_id": 0})
+        await home_update_fields(pg_pool(), home_id, updates)
+    updated = await home_by_id(pg_pool(), home_id)
     return updated
 
 @api_router.delete("/homes/{home_id}")
 async def delete_home(home_id: str, current_user: dict = Depends(get_current_user)):
-    home = await db.homes.find_one({"home_id": home_id, "owner_id": current_user["user_id"]}, {"_id": 0})
+    home = await home_find_owned(pg_pool(), home_id, current_user["user_id"])
     if not home:
         raise HTTPException(status_code=404, detail="Home not found")
-    await db.homes.delete_one({"home_id": home_id})
-    await db.devices.delete_many({"home_id": home_id})
-    await db.alerts.delete_many({"home_id": home_id})
+    await home_delete(pg_pool(), home_id)
     return {"message": "Home deleted"}
 
 # ===================== DEVICE ROUTES =====================
@@ -349,8 +418,7 @@ async def get_devices(home_id: str, current_user: dict = Depends(get_current_use
     home_ids = await get_user_home_ids(current_user["user_id"])
     if home_id not in home_ids:
         raise HTTPException(status_code=403, detail="Access denied")
-    devices = await db.devices.find({"home_id": home_id}, {"_id": 0}).to_list(200)
-    return devices
+    return await devices_list_by_home(pg_pool(), home_id)
 
 @api_router.post("/homes/{home_id}/devices")
 async def create_device(home_id: str, data: DeviceCreate, current_user: dict = Depends(get_current_user)):
@@ -369,12 +437,12 @@ async def create_device(home_id: str, data: DeviceCreate, current_user: dict = D
         "settings": data.settings or {},
         "created_at": datetime.now(timezone.utc).isoformat()
     }
-    await db.devices.insert_one(device)
+    await device_insert_one(pg_pool(), device)
     return {k: v for k, v in device.items() if k != "_id"}
 
 @api_router.get("/devices/{device_id}")
 async def get_device(device_id: str, current_user: dict = Depends(get_current_user)):
-    device = await db.devices.find_one({"device_id": device_id}, {"_id": 0})
+    device = await device_find(pg_pool(), device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
     home_ids = await get_user_home_ids(current_user["user_id"])
@@ -384,7 +452,7 @@ async def get_device(device_id: str, current_user: dict = Depends(get_current_us
 
 @api_router.put("/devices/{device_id}")
 async def update_device(device_id: str, data: DeviceUpdate, current_user: dict = Depends(get_current_user)):
-    device = await db.devices.find_one({"device_id": device_id}, {"_id": 0})
+    device = await device_find(pg_pool(), device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
     home_ids = await get_user_home_ids(current_user["user_id"])
@@ -399,35 +467,35 @@ async def update_device(device_id: str, data: DeviceUpdate, current_user: dict =
         for k, v in data.settings.items():
             updates[f"settings.{k}"] = v
     if updates:
-        await db.devices.update_one({"device_id": device_id}, {"$set": updates})
-    return await db.devices.find_one({"device_id": device_id}, {"_id": 0})
+        await device_set_field(pg_pool(), device_id, updates)
+    return await device_find(pg_pool(), device_id)
 
 @api_router.patch("/devices/{device_id}/toggle")
 async def toggle_device(device_id: str, current_user: dict = Depends(get_current_user)):
-    device = await db.devices.find_one({"device_id": device_id}, {"_id": 0})
+    device = await device_find(pg_pool(), device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
     home_ids = await get_user_home_ids(current_user["user_id"])
     if device["home_id"] not in home_ids:
         raise HTTPException(status_code=403, detail="Access denied")
     new_state = not device["is_on"]
-    await db.devices.update_one({"device_id": device_id}, {"$set": {"is_on": new_state}})
+    await device_set_field(pg_pool(), device_id, {"is_on": new_state})
     return {"device_id": device_id, "is_on": new_state}
 
 @api_router.delete("/devices/{device_id}")
 async def delete_device(device_id: str, current_user: dict = Depends(get_current_user)):
-    device = await db.devices.find_one({"device_id": device_id}, {"_id": 0})
+    device = await device_find(pg_pool(), device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
     home_ids = await get_user_home_ids(current_user["user_id"])
     if device["home_id"] not in home_ids:
         raise HTTPException(status_code=403, detail="Access denied")
-    await db.devices.delete_one({"device_id": device_id})
+    await device_delete(pg_pool(), device_id)
     return {"message": "Device deleted"}
 
 @api_router.get("/devices/{device_id}/analytics")
 async def get_device_analytics(device_id: str, period: str = "24h", current_user: dict = Depends(get_current_user)):
-    device = await db.devices.find_one({"device_id": device_id}, {"_id": 0})
+    device = await device_find(pg_pool(), device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
     if device["type"] != "solar":
@@ -441,11 +509,10 @@ async def get_device_analytics(device_id: str, period: str = "24h", current_user
     is_connected = bool(device.get("settings", {}).get("connection_config"))
 
     if period == "24h":
-        since = (now - timedelta(hours=24)).isoformat()
-        readings = await db.solar_readings.find(
-            {"device_id": device_id, "timestamp": {"$gte": since}},
-            {"_id": 0, "timestamp": 1, "current_power_w": 1}
-        ).sort("timestamp", 1).to_list(500)
+        since = now - timedelta(hours=24)
+        readings = await solar_readings_since_select(
+            pg_pool(), device_id, since, ["current_power_w"], True, 500
+        )
 
         # Build hour buckets — average power per hour
         buckets: dict = {}
@@ -472,11 +539,10 @@ async def get_device_analytics(device_id: str, period: str = "24h", current_user
             })
 
     elif period == "7d":
-        since = (now - timedelta(days=7)).isoformat()
-        readings = await db.solar_readings.find(
-            {"device_id": device_id, "timestamp": {"$gte": since}},
-            {"_id": 0, "timestamp": 1, "today_energy_kwh": 1}
-        ).sort("timestamp", 1).to_list(2000)
+        since = now - timedelta(days=7)
+        readings = await solar_readings_since_select(
+            pg_pool(), device_id, since, ["today_energy_kwh"], True, 2000
+        )
 
         # Per day: take the MAX today_energy_kwh reading = end-of-day total
         buckets = {}
@@ -496,11 +562,10 @@ async def get_device_analytics(device_id: str, period: str = "24h", current_user
             data.append({"date": key, "generation": round(buckets.get(key, 0), 2)})
 
     else:  # 30d
-        since = (now - timedelta(days=30)).isoformat()
-        readings = await db.solar_readings.find(
-            {"device_id": device_id, "timestamp": {"$gte": since}},
-            {"_id": 0, "timestamp": 1, "today_energy_kwh": 1}
-        ).sort("timestamp", 1).to_list(10000)
+        since = now - timedelta(days=30)
+        readings = await solar_readings_since_select(
+            pg_pool(), device_id, since, ["today_energy_kwh"], True, 10000
+        )
 
         buckets = {}
         for r in readings:
@@ -539,60 +604,55 @@ async def get_device_analytics(device_id: str, period: str = "24h", current_user
 @api_router.get("/alerts")
 async def get_alerts(current_user: dict = Depends(get_current_user)):
     home_ids = await get_user_home_ids(current_user["user_id"])
-    alerts = await db.alerts.find({"home_id": {"$in": home_ids}}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    return alerts
+    return await alerts_list_for_homes(pg_pool(), home_ids)
 
 @api_router.get("/homes/{home_id}/alerts")
 async def get_home_alerts(home_id: str, current_user: dict = Depends(get_current_user)):
     home_ids = await get_user_home_ids(current_user["user_id"])
     if home_id not in home_ids:
         raise HTTPException(status_code=403, detail="Access denied")
-    alerts = await db.alerts.find({"home_id": home_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    return alerts
+    return await alerts_list_home(pg_pool(), home_id)
 
 @api_router.patch("/alerts/{alert_id}/read")
 async def mark_alert_read(alert_id: str, current_user: dict = Depends(get_current_user)):
     home_ids = await get_user_home_ids(current_user["user_id"])
-    alert = await db.alerts.find_one({"alert_id": alert_id, "home_id": {"$in": home_ids}}, {"_id": 0})
+    alert = await alert_find(pg_pool(), alert_id, home_ids)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    await db.alerts.update_one({"alert_id": alert_id}, {"$set": {"is_read": True}})
+    await alert_mark_read(pg_pool(), alert_id)
     return {"alert_id": alert_id, "is_read": True}
 
 @api_router.post("/alerts/mark-all-read")
 async def mark_all_read(current_user: dict = Depends(get_current_user)):
     home_ids = await get_user_home_ids(current_user["user_id"])
-    await db.alerts.update_many({"home_id": {"$in": home_ids}}, {"$set": {"is_read": True}})
+    await alerts_mark_all_read(pg_pool(), home_ids)
     return {"message": "All alerts marked as read"}
 
 @api_router.delete("/alerts/{alert_id}")
 async def delete_alert(alert_id: str, current_user: dict = Depends(get_current_user)):
     home_ids = await get_user_home_ids(current_user["user_id"])
-    alert = await db.alerts.find_one({"alert_id": alert_id, "home_id": {"$in": home_ids}}, {"_id": 0})
+    alert = await alert_find(pg_pool(), alert_id, home_ids)
     if not alert:
         raise HTTPException(status_code=404, detail="Alert not found")
-    await db.alerts.delete_one({"alert_id": alert_id})
+    await alert_delete(pg_pool(), alert_id, home_ids)
     return {"message": "Alert deleted"}
 
 # ===================== MEMBER ROUTES =====================
 
 @api_router.get("/homes/{home_id}/members")
 async def get_members(home_id: str, current_user: dict = Depends(get_current_user)):
-    home = await db.homes.find_one(
-        {"home_id": home_id, "$or": [{"owner_id": current_user["user_id"]}, {"member_ids": current_user["user_id"]}]},
-        {"_id": 0}
-    )
+    home = await home_find_for_member(pg_pool(), home_id, current_user["user_id"])
     if not home:
         raise HTTPException(status_code=404, detail="Home not found")
     return home.get("members", [])
 
 @api_router.post("/homes/{home_id}/members")
 async def add_member(home_id: str, data: MemberInvite, current_user: dict = Depends(get_current_user)):
-    home = await db.homes.find_one({"home_id": home_id, "owner_id": current_user["user_id"]}, {"_id": 0})
+    home = await home_find_owned(pg_pool(), home_id, current_user["user_id"])
     if not home:
         raise HTTPException(status_code=403, detail="Only home owner can invite members")
 
-    invited_user = await db.users.find_one({"email": data.email.lower()}, {"_id": 0})
+    invited_user = await user_find_by_email(pg_pool(), data.email.lower())
     if not invited_user:
         raise HTTPException(status_code=404, detail="User with this email not found")
 
@@ -607,21 +667,15 @@ async def add_member(home_id: str, data: MemberInvite, current_user: dict = Depe
         "role": data.role,
         "added_at": datetime.now(timezone.utc).isoformat()
     }
-    await db.homes.update_one(
-        {"home_id": home_id},
-        {"$addToSet": {"member_ids": invited_user["user_id"]}, "$push": {"members": member_entry}}
-    )
+    await home_patch_members_add(pg_pool(), home_id, invited_user["user_id"], member_entry)
     return member_entry
 
 @api_router.delete("/homes/{home_id}/members/{member_id}")
 async def remove_member(home_id: str, member_id: str, current_user: dict = Depends(get_current_user)):
-    home = await db.homes.find_one({"home_id": home_id, "owner_id": current_user["user_id"]}, {"_id": 0})
+    home = await home_find_owned(pg_pool(), home_id, current_user["user_id"])
     if not home:
         raise HTTPException(status_code=403, detail="Only home owner can remove members")
-    await db.homes.update_one(
-        {"home_id": home_id},
-        {"$pull": {"member_ids": member_id, "members": {"user_id": member_id}}}
-    )
+    await home_patch_members_remove(pg_pool(), home_id, member_id)
     return {"message": "Member removed"}
 
 # ===================== SUBSCRIPTION ROUTES =====================
@@ -639,10 +693,7 @@ async def get_subscription(current_user: dict = Depends(get_current_user)):
 
 @api_router.post("/subscription/upgrade")
 async def upgrade_subscription(current_user: dict = Depends(get_current_user)):
-    await db.users.update_one(
-        {"user_id": current_user["user_id"]},
-        {"$set": {"subscription": "pro"}}
-    )
+    await user_set_subscription(pg_pool(), current_user["user_id"], "pro")
     return {"message": "Upgraded to Pro", "plan": "pro"}
 
 # ===================== STATS ROUTE =====================
@@ -652,11 +703,11 @@ async def get_home_stats(home_id: str, current_user: dict = Depends(get_current_
     home_ids = await get_user_home_ids(current_user["user_id"])
     if home_id not in home_ids:
         raise HTTPException(status_code=403, detail="Access denied")
-    devices = await db.devices.find({"home_id": home_id}, {"_id": 0}).to_list(200)
+    devices = await devices_list_by_home(pg_pool(), home_id, 200)
     total = len(devices)
     online = sum(1 for d in devices if d["status"] == "online")
     active = sum(1 for d in devices if d["is_on"])
-    alerts = await db.alerts.count_documents({"home_id": home_id, "is_read": False})
+    alerts = await alerts_count_unread(pg_pool(), home_id)
     solar = next((d for d in devices if d["type"] == "solar"), None)
     return {
         "total_devices": total,
@@ -719,7 +770,7 @@ async def test_solar_connection(data: SolarTestRequest, current_user: dict = Dep
 @api_router.post("/devices/{device_id}/solar/configure")
 async def configure_solar_device(device_id: str, data: SolarConfigureRequest, current_user: dict = Depends(get_current_user)):
     """Save solar inverter connection configuration (with encrypted password)."""
-    device = await db.devices.find_one({"device_id": device_id, "type": "solar"}, {"_id": 0})
+    device = await device_find_solar(pg_pool(), device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Solar device not found")
     home_ids = await get_user_home_ids(current_user["user_id"])
@@ -755,36 +806,15 @@ async def configure_solar_device(device_id: str, data: SolarConfigureRequest, cu
         config["username"] = data.username
         config["password_enc"] = encrypt_credential(data.password) if data.password else ""
 
-    # FIX: Clear stale data from previous brand so old readings don't bleed through
-    await db.devices.update_one(
-        {"device_id": device_id},
-        {"$unset": {
-            "settings.current_power_w": "",
-            "settings.today_generation_kwh": "",
-            "settings.total_energy_kwh": "",
-            "settings.grid_voltage_v": "",
-            "settings.grid_frequency_hz": "",
-            "settings.temperature_c": "",
-            "settings.pv_strings": "",
-            "settings.capacity_kw": "",
-            "settings.inverter_model": "",
-            "settings.inverter_sn": "",
-            "settings.monthly_savings_pkr": "",
-            "settings.last_sync": "",
-            "settings.last_sync_error": "",
-            "settings.battery_soc": "",
-            "settings.grid_import_w": "",
-            "settings.grid_export_w": "",
-        }}
-    )
-
-    await db.devices.update_one(
-        {"device_id": device_id},
-        {"$set": {
-            "settings.connection_config": config,
-            "settings.connection_brand": data.brand,
-            "settings.connection_status": "connected",
-        }}
+    await device_drop_settings_keys(pg_pool(), device_id, _SOLAR_STALE_FIELDS)
+    await device_settings_merge_nested(
+        pg_pool(),
+        device_id,
+        {
+            "connection_config": config,
+            "connection_brand": data.brand,
+            "connection_status": "connected",
+        },
     )
 
     # Trigger immediate sync for live brands
@@ -797,7 +827,7 @@ async def configure_solar_device(device_id: str, data: SolarConfigureRequest, cu
 @api_router.post("/devices/{device_id}/solar/sync")
 async def manual_solar_sync(device_id: str, current_user: dict = Depends(get_current_user)):
     """Manually trigger a solar data sync."""
-    device = await db.devices.find_one({"device_id": device_id, "type": "solar"}, {"_id": 0})
+    device = await device_find_solar(pg_pool(), device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Solar device not found")
     home_ids = await get_user_home_ids(current_user["user_id"])
@@ -825,7 +855,7 @@ async def manual_solar_sync(device_id: str, current_user: dict = Depends(get_cur
 @api_router.get("/devices/{device_id}/solar/live")
 async def get_solar_live(device_id: str, current_user: dict = Depends(get_current_user)):
     """Get the most recent live solar data (stored from last poll)."""
-    device = await db.devices.find_one({"device_id": device_id, "type": "solar"}, {"_id": 0})
+    device = await device_find_solar(pg_pool(), device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Solar device not found")
     home_ids = await get_user_home_ids(current_user["user_id"])
@@ -862,53 +892,27 @@ async def get_solar_live(device_id: str, current_user: dict = Depends(get_curren
 @api_router.get("/devices/{device_id}/solar/readings")
 async def get_solar_readings(device_id: str, limit: int = 50, current_user: dict = Depends(get_current_user)):
     """Get historical solar readings from the database."""
-    device = await db.devices.find_one({"device_id": device_id, "type": "solar"}, {"_id": 0})
+    device = await device_find_solar(pg_pool(), device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Solar device not found")
     home_ids = await get_user_home_ids(current_user["user_id"])
     if device["home_id"] not in home_ids:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    readings = await db.solar_readings.find(
-        {"device_id": device_id}, {"_id": 0}
-    ).sort("timestamp", -1).limit(min(limit, 200)).to_list(200)
-    return readings
+    return await solar_readings_list(pg_pool(), device_id, min(limit, 200))
 
 @api_router.delete("/devices/{device_id}/solar/configure")
 async def disconnect_solar(device_id: str, current_user: dict = Depends(get_current_user)):
     """Disconnect solar inverter integration."""
-    device = await db.devices.find_one({"device_id": device_id, "type": "solar"}, {"_id": 0})
+    device = await device_find_solar(pg_pool(), device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Solar device not found")
     home_ids = await get_user_home_ids(current_user["user_id"])
     if device["home_id"] not in home_ids:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    await db.devices.update_one(
-        {"device_id": device_id},
-        {"$unset": {
-            "settings.connection_config": "",
-            "settings.connection_brand": "",
-            "settings.connection_status": "",
-            "settings.current_power_w": "",
-            "settings.today_generation_kwh": "",
-            "settings.total_energy_kwh": "",
-            "settings.grid_voltage_v": "",
-            "settings.grid_frequency_hz": "",
-            "settings.temperature_c": "",
-            "settings.pv_strings": "",
-            "settings.capacity_kw": "",
-            "settings.inverter_model": "",
-            "settings.inverter_sn": "",
-            "settings.monthly_savings_pkr": "",
-            "settings.last_sync": "",
-            "settings.last_sync_error": "",
-            "settings.battery_soc": "",
-            "settings.grid_import_w": "",
-            "settings.grid_export_w": "",
-        }}
-    )
-    await db.devices.update_one({"device_id": device_id}, {"$set": {"status": "offline"}})
+    await device_drop_settings_keys(pg_pool(), device_id, _SOLAR_DISCONNECT_FIELDS)
+    await device_set_status(pg_pool(), device_id, "offline")
     return {"success": True, "message": "Solar inverter disconnected."}
 
 # ===================== SOLAR BACKGROUND HELPERS =====================
@@ -918,46 +922,49 @@ async def _apply_solar_data(device_id: str, config: dict, data: dict):
     rate = float(config.get("electricity_rate_pkr", 35.0))
     monthly_savings = round(data.get("today_energy_kwh", 0) * rate * 30, 0)
 
-    await db.devices.update_one(
-        {"device_id": device_id},
-        {"$set": {
-            "settings.today_generation_kwh": data.get("today_energy_kwh", 0),
-            "settings.total_energy_kwh": data.get("total_energy_kwh", 0),
-            "settings.current_power_w": data.get("current_power_w", 0),
-            "settings.grid_voltage_v": data.get("grid_voltage_v", 0),
-            "settings.grid_frequency_hz": data.get("grid_frequency_hz", 0),
-            "settings.temperature_c": data.get("temperature_c", 0),
-            "settings.pv_strings": data.get("pv_strings", []),
-            "settings.battery_soc": data.get("battery_soc", 0),
-            "settings.grid_import_w": data.get("grid_import_w", 0),
-            "settings.grid_export_w": data.get("grid_export_w", 0),
-            "settings.monthly_savings_pkr": monthly_savings,
-            "settings.last_sync": datetime.now(timezone.utc).isoformat(),
-            "settings.last_sync_error": None,
-            "settings.inverter_model": data.get("model"),
-            "settings.inverter_sn": data.get("inverter_sn"),
-            **( {"settings.capacity_kw": data["capacity_kw"]} if data.get("capacity_kw") else {} ),
-            "status": "online" if data.get("is_online") else "offline",
-        }}
-    )
-    # Store historical reading
-    await db.solar_readings.insert_one({
-        "device_id": device_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "current_power_w": data.get("current_power_w", 0),
-        "today_energy_kwh": data.get("today_energy_kwh", 0),
+    patch: Dict[str, Any] = {
+        "today_generation_kwh": data.get("today_energy_kwh", 0),
         "total_energy_kwh": data.get("total_energy_kwh", 0),
+        "current_power_w": data.get("current_power_w", 0),
         "grid_voltage_v": data.get("grid_voltage_v", 0),
+        "grid_frequency_hz": data.get("grid_frequency_hz", 0),
         "temperature_c": data.get("temperature_c", 0),
         "pv_strings": data.get("pv_strings", []),
-        "is_online": data.get("is_online", False),
-    })
+        "battery_soc": data.get("battery_soc", 0),
+        "grid_import_w": data.get("grid_import_w", 0),
+        "grid_export_w": data.get("grid_export_w", 0),
+        "monthly_savings_pkr": monthly_savings,
+        "last_sync": datetime.now(timezone.utc).isoformat(),
+        "last_sync_error": None,
+        "inverter_model": data.get("model"),
+        "inverter_sn": data.get("inverter_sn"),
+    }
+    if data.get("capacity_kw"):
+        patch["capacity_kw"] = data["capacity_kw"]
+
+    await device_settings_merge_nested(pg_pool(), device_id, patch)
+    await device_set_status(pg_pool(), device_id, "online" if data.get("is_online") else "offline")
+
+    await solar_reading_insert(
+        pg_pool(),
+        {
+            "device_id": device_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "current_power_w": data.get("current_power_w", 0),
+            "today_energy_kwh": data.get("today_energy_kwh", 0),
+            "total_energy_kwh": data.get("total_energy_kwh", 0),
+            "grid_voltage_v": data.get("grid_voltage_v", 0),
+            "temperature_c": data.get("temperature_c", 0),
+            "pv_strings": data.get("pv_strings", []),
+            "is_online": data.get("is_online", False),
+        },
+    )
 
 async def sync_solar_device_task(device_id: str):
     """Fire-and-forget task to sync a single device."""
     await asyncio.sleep(2)
     try:
-        device = await db.devices.find_one({"device_id": device_id}, {"_id": 0})
+        device = await device_find(pg_pool(), device_id)
         if not device:
             return
         config = device.get("settings", {}).get("connection_config")
@@ -968,9 +975,13 @@ async def sync_solar_device_task(device_id: str):
         logger.info(f"Solar sync OK: {device_id} → {data.get('current_power_w', 0):.0f}W")
     except Exception as e:
         logger.error(f"Solar sync failed {device_id}: {e}")
-        await db.devices.update_one(
-            {"device_id": device_id},
-            {"$set": {"settings.last_sync_error": str(e), "settings.last_sync": datetime.now(timezone.utc).isoformat()}}
+        await device_settings_merge_nested(
+            pg_pool(),
+            device_id,
+            {
+                "last_sync_error": str(e),
+                "last_sync": datetime.now(timezone.utc).isoformat(),
+            },
         )
 
 async def solar_polling_background():
@@ -978,10 +989,7 @@ async def solar_polling_background():
     await asyncio.sleep(60)  # wait 60s after startup
     while True:
         try:
-            devices = await db.devices.find(
-                {"type": "solar", "settings.connection_config": {"$exists": True}},
-                {"_id": 0, "device_id": 1, "name": 1, "settings": 1}
-            ).to_list(100)
+            devices = await devices_find_solar_with_connection(pg_pool())
 
             for device in devices:
                 config = device.get("settings", {}).get("connection_config", {})
@@ -993,9 +1001,8 @@ async def solar_polling_background():
                         logger.info(f"Auto-poll: {device['name']} → {data.get('current_power_w', 0):.0f}W")
                     except Exception as e:
                         logger.warning(f"Auto-poll failed {device['device_id']}: {e}")
-                        await db.devices.update_one(
-                            {"device_id": device["device_id"]},
-                            {"$set": {"settings.last_sync_error": str(e)}}
+                        await device_settings_merge_nested(
+                            pg_pool(), device["device_id"], {"last_sync_error": str(e)}
                         )
         except Exception as e:
             logger.error(f"Solar background polling error: {e}")
@@ -1006,9 +1013,10 @@ app.include_router(api_router)
 
 @app.on_event("startup")
 async def startup_event():
+    await init_pg_pool()
     asyncio.create_task(solar_polling_background())
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
-    client.close()
+    await close_pg_pool()
 

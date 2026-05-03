@@ -30,7 +30,7 @@ def get_fernet() -> Fernet:
     key = os.environ.get("ENCRYPTION_KEY", "")
     if not key:
         import base64 as b64, hashlib as hs
-        seed = os.environ.get("MONGO_URL", "cohome-fallback-key-dev")
+        seed = os.environ.get("SUPABASE_URL") or os.environ.get("DATABASE_URL") or os.environ.get("MONGO_URL", "cohome-fallback-key-dev")
         key = b64.urlsafe_b64encode(hs.sha256(seed.encode()).digest()).decode()
     return Fernet(key.encode() if isinstance(key, str) else key)
 
