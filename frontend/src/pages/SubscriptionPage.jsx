@@ -3,8 +3,7 @@ import { CreditCard, Check, Zap, ArrowRight, Star } from "lucide-react";
 import AppLayout from "@/components/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import axios from "axios";
-
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+import { API } from "@/apiBase";
 
 const plans = [
   {

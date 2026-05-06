@@ -3,8 +3,7 @@ import { Users, UserPlus, Trash2, Crown, Shield, User } from "lucide-react";
 import AppLayout from "@/components/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import axios from "axios";
-
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+import { API } from "@/apiBase";
 
 const roleConfig = {
   owner: { icon: Crown, label: "Owner", color: "bg-amber-100 text-amber-700" },

@@ -719,6 +719,54 @@ async def get_home_stats(home_id: str, current_user: dict = Depends(get_current_
         "monthly_savings_pkr": solar["settings"].get("monthly_savings_pkr", 0) if solar else 0
     }
 
+
+def _esp32_base_url_from_env() -> str:
+    raw = (os.environ.get("ESP32_BASE_URL") or os.environ.get("REACT_APP_ESP32_URL") or "").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+        raw = raw[1:-1].strip()
+    if not raw:
+        return ""
+    rl = raw.lower()
+    if not rl.startswith(("http://", "https://")):
+        raw = "http://" + raw
+    return raw.rstrip("/")
+
+
+@api_router.get("/esp32/servo-on")
+async def esp32_servo_on_proxy(current_user: dict = Depends(get_current_user)):
+    """Forward servo trigger to the board — avoids browser CORS blocking LAN HTTP."""
+    base = _esp32_base_url_from_env()
+    if not base:
+        raise HTTPException(
+            status_code=503,
+            detail="Set ESP32_BASE_URL or REACT_APP_ESP32_URL in backend .env.local (e.g. http://192.168.18.212)",
+        )
+    path = (os.environ.get("ESP32_SERVO_PATH") or "/servo/on").strip()
+    if not path.startswith("/"):
+        path = "/" + path
+    url = f"{base}{path}"
+    try:
+        r = await asyncio.to_thread(lambda: req_lib.get(url, timeout=6))
+    except req_lib.RequestException as e:
+        logger.warning("ESP32 servo proxy: %s", e)
+        raise HTTPException(status_code=502, detail=f"Could not reach ESP32: {e}") from e
+    if not r.ok:
+        if r.status_code == 404:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f'ESP32 has no GET route at "{path}" (requested {url}). '
+                    f"In Arduino add server.on(\"{path}\", HTTP_GET, ...) before server.begin(), "
+                    f"or set ESP32_SERVO_PATH in backend .env.local to match your existing route."
+                ),
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=f"ESP32 GET {path} returned HTTP {r.status_code} ({url})",
+        )
+    return {"ok": True}
+
+
 # ===================== SOLAR INTEGRATION ROUTES =====================
 
 class SolarTestRequest(BaseModel):

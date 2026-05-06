@@ -5,8 +5,7 @@ import AppLayout from "@/components/AppLayout";
 import ConnectSolarModal from "@/components/ConnectSolarModal";
 import { useAuth } from "@/contexts/AuthContext";
 import axios from "axios";
-
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+import { API } from "@/apiBase";
 
 const BRAND_LABELS = {
   goodwe: "GoodWe SEMS", fronius: "Fronius Local",

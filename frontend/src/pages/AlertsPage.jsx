@@ -3,8 +3,7 @@ import { AlertTriangle, Info, Zap, CheckCheck, Trash2, Bell } from "lucide-react
 import AppLayout from "@/components/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import axios from "axios";
-
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+import { API } from "@/apiBase";
 
 const severityConfig = {
   info: { icon: Info, color: "bg-blue-50 border-blue-100 text-blue-700", badge: "bg-blue-100 text-blue-600" },

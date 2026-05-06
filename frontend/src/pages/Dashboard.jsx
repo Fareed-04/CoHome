@@ -1,12 +1,129 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { Sun, Shield, Thermometer, Bell, Home, Zap, ArrowRight, ToggleLeft, ToggleRight, AlertTriangle } from "lucide-react";
+import { Sun, Shield, Thermometer, Bell, Home, Zap, ArrowRight, ToggleLeft, ToggleRight, AlertTriangle, Cpu, Play } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import AppLayout from "@/components/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import axios from "axios";
+import { API, ESP32_BASE_URL } from "@/apiBase";
 
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const ESP32_POLL_MS = 1000;
+
+function formatSensorLabel(key) {
+  return key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase()).trim();
+}
+
+function formatSensorValue(value) {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+/** Analog (~2–4095): threshold applies only when value is not 0 or 1 — those are treated as digital (0 = dry, 1 = wet) */
+const ESP32_WATER_ANALOG_WET_IF_BELOW = 1500;
+
+/** true = wet when ADC low; false = wet when ADC high (invert if Yes/No is backwards) */
+const ESP32_WATER_ANALOG_WET_IS_LOW = true;
+
+const RAIN_KEYS = new Set(["rain", "waterLevel"]);
+const WIPER_KEYS = new Set(["wipers", "wiper"]);
+
+/** Shown in Live hardware cards — still sent to esp32 so waterDetectedYesNo can read them */
+const ESP32_WATER_META_KEYS = new Set([
+  "searching",
+  "searchingForWater",
+  "waterSearching",
+  "waterStatus",
+  "waterState",
+]);
+
+const ESP32_WATER_MSG_YES = "Yes";
+const ESP32_WATER_MSG_NO = "No, looking for rain";
+
+function payloadIndicatesWaterSearching(payload) {
+  if (!payload || typeof payload !== "object") return false;
+  if (payload.searching === true || payload.searchingForWater === true || payload.waterSearching === true)
+    return true;
+  for (const k of ["waterStatus", "waterState"]) {
+    const v = payload[k];
+    if (v != null && String(v).toLowerCase().includes("search")) return true;
+  }
+  return false;
+}
+
+function waterDetectedPhraseIndicatesSearching(s) {
+  const t = s.trim().toLowerCase();
+  return (
+    t.includes("searching") ||
+    t.includes("looking for water") ||
+    t.includes("looking for rain") ||
+    t.startsWith("search ")
+  );
+}
+
+function waterDetectedYesNo(value, payload) {
+  if (payloadIndicatesWaterSearching(payload)) return ESP32_WATER_MSG_NO;
+
+  if (value === null || value === undefined) return ESP32_WATER_MSG_NO;
+  if (typeof value === "boolean") return value ? ESP32_WATER_MSG_YES : ESP32_WATER_MSG_NO;
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    // 0 / 1 = digital-style flag from firmware (0 = no water, 1 = detected). Do not treat 0 as "wet ADC".
+    if (value === 0 || value === 1) {
+      return value === 1 ? ESP32_WATER_MSG_YES : ESP32_WATER_MSG_NO;
+    }
+    const wet = ESP32_WATER_ANALOG_WET_IS_LOW
+      ? value < ESP32_WATER_ANALOG_WET_IF_BELOW
+      : value > ESP32_WATER_ANALOG_WET_IF_BELOW;
+    return wet ? ESP32_WATER_MSG_YES : ESP32_WATER_MSG_NO;
+  }
+
+  const s = String(value).trim();
+  const lower = s.toLowerCase();
+  if (waterDetectedPhraseIndicatesSearching(lower)) return ESP32_WATER_MSG_NO;
+
+  if (["yes", "true", "1", "on", "wet", "raining", "detected"].includes(lower)) return ESP32_WATER_MSG_YES;
+  if (["no", "false", "0", "off", "dry", "idle", "waiting"].includes(lower)) return ESP32_WATER_MSG_NO;
+  return String(value);
+}
+
+function wiperWorkingStatus(value) {
+  if (value === null || value === undefined) return "—";
+  if (typeof value === "boolean") return value ? "Working" : "Not working";
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value !== 0 ? "Working" : "Not working";
+  }
+  const s = String(value).trim().toLowerCase();
+  if (["on", "yes", "true", "1", "working", "ok", "active"].includes(s)) return "Working";
+  if (["off", "no", "false", "0", "not working", "broken", "error", "fail", "failed", "stopped", "inactive", "fault"].includes(s))
+    return "Not working";
+  return String(value);
+}
+
+function esp32SensorLabel(key) {
+  if (RAIN_KEYS.has(key)) return "Water detected";
+  if (WIPER_KEYS.has(key)) return "Wipers";
+  return formatSensorLabel(key);
+}
+
+function esp32SensorValue(key, value, payload) {
+  if (RAIN_KEYS.has(key)) return waterDetectedYesNo(value, payload);
+  if (WIPER_KEYS.has(key)) return wiperWorkingStatus(value);
+  return formatSensorValue(value);
+}
+
+function orderedEsp32Keys(obj) {
+  const keys = Object.keys(obj).filter((k) => !ESP32_WATER_META_KEYS.has(k));
+  const rainKey = keys.includes("rain") ? "rain" : keys.includes("waterLevel") ? "waterLevel" : null;
+  const wiperKey = keys.includes("wipers") ? "wipers" : keys.includes("wiper") ? "wiper" : null;
+  const out = [];
+  if (keys.includes("lightStatus")) out.push("lightStatus");
+  if (rainKey) out.push(rainKey);
+  if (wiperKey) out.push(wiperKey);
+  const known = new Set(["lightStatus", "rain", "waterLevel", "wipers", "wiper", ...ESP32_WATER_META_KEYS]);
+  const tail = keys.filter((k) => !known.has(k)).sort();
+  return [...out, ...tail];
+}
 
 const deviceTypeConfig = {
   solar: { icon: Sun, color: "bg-amber-50 text-amber-600 border-amber-100", label: "Solar Panel" },
@@ -76,7 +193,35 @@ export default function Dashboard() {
   const [alerts, setAlerts] = useState([]);
   const [chartData, setChartData] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [esp32Sensors, setEsp32Sensors] = useState(null);
+  const [esp32RawBody, setEsp32RawBody] = useState(null);
+  const [esp32Error, setEsp32Error] = useState(null);
+  const [esp32UpdatedAt, setEsp32UpdatedAt] = useState(null);
+  const [servoBusy, setServoBusy] = useState(false);
+  const [servoFeedback, setServoFeedback] = useState(null);
   const navigate = useNavigate();
+
+  const triggerEsp32ServoOn = useCallback(async () => {
+    setServoBusy(true);
+    setServoFeedback(null);
+    try {
+      await axios.get(`${API}/esp32/servo-on`, { withCredentials: true });
+      setServoFeedback({ ok: true });
+      window.setTimeout(() => setServoFeedback(null), 4000);
+    } catch (e) {
+      const raw = e?.response?.data?.detail;
+      const msg = Array.isArray(raw)
+        ? raw.map((x) => x?.msg || JSON.stringify(x)).join("; ")
+        : typeof raw === "string"
+          ? raw
+          : raw != null
+            ? JSON.stringify(raw)
+            : e?.message || "Request failed";
+      setServoFeedback({ ok: false, msg });
+    } finally {
+      setServoBusy(false);
+    }
+  }, []);
 
   const load = useCallback(async () => {
     if (!selectedHomeId) { setLoading(false); return; }
@@ -101,6 +246,50 @@ export default function Dashboard() {
   }, [selectedHomeId]);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!ESP32_BASE_URL) return undefined;
+    let cancelled = false;
+    const url = `${ESP32_BASE_URL}/data`;
+
+    const tick = () => {
+      fetch(url, { method: "GET", cache: "no-store" })
+        .then(async (res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.text();
+        })
+        .then((text) => {
+          if (cancelled) return;
+          const trimmed = text.trimEnd();
+          setEsp32RawBody(trimmed);
+          try {
+            const parsed = JSON.parse(text);
+            const data =
+              parsed && typeof parsed === "object" && !Array.isArray(parsed)
+                ? parsed
+                : {};
+            setEsp32Sensors(data);
+          } catch {
+            setEsp32Sensors({});
+          }
+          setEsp32Error(null);
+          setEsp32UpdatedAt(new Date());
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setEsp32Error("Cannot reach ESP32");
+          setEsp32Sensors(null);
+          setEsp32RawBody(null);
+        });
+    };
+
+    tick();
+    const id = setInterval(tick, ESP32_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   const handleToggle = async (deviceId, currentState) => {
     try {
@@ -158,6 +347,94 @@ export default function Dashboard() {
           <StatCard icon={Shield} label="Online" value={stats?.online_devices || 0} colorClass="bg-green-50 text-green-600" delay={0.05} />
           <StatCard icon={Sun} label="Solar Today" value={stats?.solar_today_kwh || 0} unit="kWh" colorClass="bg-amber-50 text-amber-600" delay={0.1} />
           <StatCard icon={AlertTriangle} label="Active Alerts" value={stats?.unread_alerts || 0} colorClass={stats?.unread_alerts > 0 ? "bg-rose-50 text-rose-600" : "bg-slate-50 text-slate-500"} delay={0.15} />
+        </div>
+
+        {/* ESP32 live sensors (GET /data on local network) */}
+        <div
+          data-testid="esp32-live-panel"
+          className="mb-8 bg-white rounded-3xl border border-slate-100 p-6 shadow-soft animate-fade-in-up"
+          style={{ animationDelay: "0.18s" }}
+        >
+          <div className="flex flex-wrap items-start justify-between gap-4 mb-5">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 bg-teal-50 text-teal-600 border border-teal-100 rounded-2xl flex items-center justify-center shrink-0">
+                <Cpu size={18} />
+              </div>
+              <div>
+                <h2 className="font-bold text-slate-800 text-lg" style={{ fontFamily: "Outfit, sans-serif" }}>
+                  Live hardware
+                </h2>
+                <p className="text-slate-500 text-sm mt-0.5">
+                  {ESP32_BASE_URL
+                    ? `Polling ${ESP32_BASE_URL}/data every ${ESP32_POLL_MS / 1000}s`
+                    : "Point the app at your ESP32 with REACT_APP_ESP32_URL (e.g. http://192.168.1.42)"}
+                </p>
+              </div>
+            </div>
+            {ESP32_BASE_URL ? (
+              <div className="flex flex-wrap items-center gap-3 shrink-0">
+                <button
+                  type="button"
+                  data-testid="esp32-servo-on-btn"
+                  onClick={triggerEsp32ServoOn}
+                  disabled={servoBusy}
+                  className="inline-flex items-center gap-2 rounded-full bg-indigo-600 text-white text-sm font-semibold px-5 py-2.5 shadow-sm hover:bg-indigo-700 disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                >
+                  <Play size={16} fill="currentColor" className="opacity-90" />
+                  {servoBusy ? "Sending…" : "Turn servo on"}
+                </button>
+                <div className="flex items-center gap-2 text-sm">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${esp32Error ? "bg-amber-500" : "bg-green-500 animate-pulse"}`} />
+                  <span className="text-slate-600">{esp32Error || "Connected"}</span>
+                  {esp32UpdatedAt && !esp32Error ? (
+                    <span className="text-slate-400">· {esp32UpdatedAt.toLocaleTimeString()}</span>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+          </div>
+          {ESP32_BASE_URL && servoFeedback ? (
+            <p
+              className={`text-sm mb-4 rounded-xl px-3 py-2 ${servoFeedback.ok ? "bg-emerald-50 text-emerald-800 border border-emerald-100" : "bg-rose-50 text-rose-800 border border-rose-100"}`}
+              role="status"
+            >
+              {servoFeedback.ok ? "Servo command sent." : servoFeedback.msg}
+            </p>
+          ) : null}
+          {!ESP32_BASE_URL ? (
+            <p className="text-sm text-slate-500 rounded-2xl bg-slate-50 border border-slate-100 px-4 py-3 font-mono">
+              REACT_APP_ESP32_URL=http://YOUR_ESP32_IP
+            </p>
+          ) : esp32Error ? (
+            <p className="text-sm text-amber-700 bg-amber-50 border border-amber-100 rounded-2xl px-4 py-3">{esp32Error}</p>
+          ) : (
+            <>
+              {esp32Sensors && orderedEsp32Keys(esp32Sensors).length > 0 ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                  {orderedEsp32Keys(esp32Sensors).map((key) => (
+                    <div key={key} className="rounded-2xl border border-slate-100 bg-slate-50/80 p-4">
+                      <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">{esp32SensorLabel(key)}</p>
+                      <p className="text-lg font-semibold text-slate-800 mt-1 leading-snug break-words" title={esp32SensorValue(key, esp32Sensors[key], esp32Sensors)}>
+                        {esp32SensorValue(key, esp32Sensors[key], esp32Sensors)}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : esp32RawBody !== null ? (
+                <p className="text-sm text-slate-400 text-center py-4">No parsed fields to show as cards (see raw response below).</p>
+              ) : (
+                <p className="text-sm text-slate-400 text-center py-6">Waiting for sensor JSON…</p>
+              )}
+              {esp32RawBody !== null ? (
+                <div data-testid="esp32-raw-response" className="mt-6 pt-6 border-t border-slate-100">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Raw ESP response</p>
+                  <pre className="text-xs font-mono text-slate-700 bg-slate-900/[0.04] rounded-2xl border border-slate-100 p-4 overflow-x-auto max-h-64 overflow-y-auto whitespace-pre-wrap break-all leading-relaxed">
+                    {esp32RawBody.length ? esp32RawBody : "(empty body)"}
+                  </pre>
+                </div>
+              ) : null}
+            </>
+          )}
         </div>
 
         {/* Chart + Devices Grid */}

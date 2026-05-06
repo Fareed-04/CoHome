@@ -3,8 +3,7 @@ import { Bell, Video, Volume2, VolumeX, Clock, BellRing } from "lucide-react";
 import AppLayout from "@/components/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import axios from "axios";
-
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+import { API } from "@/apiBase";
 
 const MOCK_HISTORY = [
   { id: 1, type: "Ring", time: "2 min ago", note: "Visitor at front door" },

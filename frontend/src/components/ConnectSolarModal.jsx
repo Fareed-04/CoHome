@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { X, CheckCircle, AlertCircle, Loader, ChevronRight, Wifi, WifiOff, Info } from "lucide-react";
 import axios from "axios";
-
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+import { API } from "@/apiBase";
 
 const BRANDS = [
   {
