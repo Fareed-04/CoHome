@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 import os
 import logging
+import math
 import secrets
 import uuid
 import bcrypt
@@ -732,6 +733,91 @@ def _esp32_base_url_from_env() -> str:
     return raw.rstrip("/")
 
 
+def _esp32_endpoint_from_env(default_path: str, env_key: str) -> str:
+    path = (os.environ.get(env_key) or default_path).strip()
+    if not path.startswith("/"):
+        path = "/" + path
+    return path
+
+
+async def _fetch_json(url: str, timeout: int = 10) -> dict:
+    def _do_request() -> dict:
+        response = req_lib.get(url, timeout=timeout)
+        response.raise_for_status()
+        return response.json()
+
+    return await asyncio.to_thread(_do_request)
+
+
+async def _trigger_esp32_servo_background() -> None:
+    base = _esp32_base_url_from_env()
+    if not base:
+        logger.warning("Predictive trigger skipped: ESP32_BASE_URL is not configured")
+        return
+
+    path = _esp32_endpoint_from_env("/servo/on", "ESP32_SERVO_PATH")
+    url = f"{base}{path}"
+    try:
+        await asyncio.to_thread(lambda: req_lib.get(url, timeout=6))
+        logger.info("Predictive trigger sent to ESP32: %s", url)
+    except req_lib.RequestException as e:
+        logger.warning("Predictive trigger failed: %s", e)
+
+
+async def _fetch_open_meteo_daily_forecast() -> dict:
+    weather_url = (
+        "https://api.open-meteo.com/v1/forecast"
+        "?latitude=31.44&longitude=74.27"
+        "&daily=temperature_2m_max,precipitation_sum,shortwave_radiation_sum"
+        "&timezone=auto"
+    )
+    return await _fetch_json(weather_url, timeout=12)
+
+
+def _predict_from_weather(daily: dict) -> dict:
+    dates = daily.get("time") or []
+    temperatures = daily.get("temperature_2m_max") or []
+    precipitation = daily.get("precipitation_sum") or []
+    radiation = daily.get("shortwave_radiation_sum") or []
+
+    if not dates or not temperatures or not precipitation or not radiation:
+        raise HTTPException(status_code=502, detail="Open-Meteo response missing daily forecast data")
+
+    today = datetime.now().astimezone().date().isoformat()
+    if today in dates:
+        index = dates.index(today)
+    else:
+        index = 0
+
+    max_temp = float(temperatures[index] or 0)
+    precipitation_value = float(precipitation[index] or 0)
+    solar_irradiance = float(radiation[index] or 0) / 3.6
+    current_month = datetime.now().astimezone().month
+    month_cos = math.cos(2 * math.pi * current_month / 12)
+
+    prediction = (
+        9.0488
+        + (-4.6126 * month_cos)
+        + (-0.3670 * max_temp)
+        + (9.5595 * solar_irradiance)
+        + (0.0235 * precipitation_value)
+    )
+
+    features = {
+        "month": current_month,
+        "month_cos": round(month_cos, 6),
+        "max_temp": max_temp,
+        "solar_irradiance": round(solar_irradiance, 6),
+        "precipitation": precipitation_value,
+    }
+
+    return {
+        "prediction": round(prediction, 4),
+        "features": features,
+        "forecast_date": dates[index],
+    }
+
+
 @api_router.get("/esp32/servo-on")
 async def esp32_servo_on_proxy(current_user: dict = Depends(get_current_user)):
     """Forward servo trigger to the board — avoids browser CORS blocking LAN HTTP."""
@@ -765,6 +851,46 @@ async def esp32_servo_on_proxy(current_user: dict = Depends(get_current_user)):
             detail=f"ESP32 GET {path} returned HTTP {r.status_code} ({url})",
         )
     return {"ok": True}
+
+
+@api_router.get("/predictive-trigger")
+async def predictive_trigger(current_user: dict = Depends(get_current_user)):
+    """Predict whether the wiper should run, then trigger ESP32 without blocking the response."""
+    weather_task = asyncio.create_task(_fetch_open_meteo_daily_forecast())
+
+    esp32_data: Optional[dict] = None
+    esp32_error: Optional[str] = None
+    base = _esp32_base_url_from_env()
+    data_path = _esp32_endpoint_from_env("/data", "ESP32_DATA_PATH")
+
+    if base:
+        esp32_url = f"{base}{data_path}"
+        try:
+            esp32_data = await _fetch_json(esp32_url, timeout=8)
+        except Exception as e:
+            esp32_error = str(e)
+            logger.warning("Predictive trigger ESP32 data fetch failed: %s", e)
+    else:
+        esp32_error = "ESP32_BASE_URL is not configured"
+
+    weather = await weather_task
+    daily = weather.get("daily") or {}
+    prediction_payload = _predict_from_weather(daily)
+    prediction_value = prediction_payload["prediction"]
+
+    wiper_triggered = prediction_value > 50
+    if wiper_triggered:
+        asyncio.create_task(_trigger_esp32_servo_background())
+
+    return {
+        "prediction": prediction_value,
+        "features": prediction_payload["features"],
+        "forecast_date": prediction_payload["forecast_date"],
+        "threshold": 50,
+        "wiper_triggered": wiper_triggered,
+        "esp32_data": esp32_data,
+        "esp32_error": esp32_error,
+    }
 
 
 # ===================== SOLAR INTEGRATION ROUTES =====================
@@ -1067,4 +1193,3 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     await close_pg_pool()
-

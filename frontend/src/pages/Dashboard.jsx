@@ -199,6 +199,8 @@ export default function Dashboard() {
   const [esp32UpdatedAt, setEsp32UpdatedAt] = useState(null);
   const [servoBusy, setServoBusy] = useState(false);
   const [servoFeedback, setServoFeedback] = useState(null);
+  const [predictiveBusy, setPredictiveBusy] = useState(false);
+  const [predictiveFeedback, setPredictiveFeedback] = useState(null);
   const navigate = useNavigate();
 
   const triggerEsp32ServoOn = useCallback(async () => {
@@ -220,6 +222,27 @@ export default function Dashboard() {
       setServoFeedback({ ok: false, msg });
     } finally {
       setServoBusy(false);
+    }
+  }, []);
+
+  const runPredictiveTrigger = useCallback(async () => {
+    setPredictiveBusy(true);
+    setPredictiveFeedback(null);
+    try {
+      const res = await axios.get(`${API}/predictive-trigger`, { withCredentials: true });
+      setPredictiveFeedback({ ok: true, data: res.data });
+    } catch (e) {
+      const raw = e?.response?.data?.detail;
+      const msg = Array.isArray(raw)
+        ? raw.map((x) => x?.msg || JSON.stringify(x)).join("; ")
+        : typeof raw === "string"
+          ? raw
+          : raw != null
+            ? JSON.stringify(raw)
+            : e?.message || "Request failed";
+      setPredictiveFeedback({ ok: false, msg });
+    } finally {
+      setPredictiveBusy(false);
     }
   }, []);
 
@@ -375,6 +398,16 @@ export default function Dashboard() {
               <div className="flex flex-wrap items-center gap-3 shrink-0">
                 <button
                   type="button"
+                  data-testid="predictive-trigger-btn"
+                  onClick={runPredictiveTrigger}
+                  disabled={predictiveBusy}
+                  className="inline-flex items-center gap-2 rounded-full bg-teal-600 text-white text-sm font-semibold px-5 py-2.5 shadow-sm hover:bg-teal-700 disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                >
+                  <Thermometer size={16} />
+                  {predictiveBusy ? "Evaluating…" : "Predictive trigger"}
+                </button>
+                <button
+                  type="button"
                   data-testid="esp32-servo-on-btn"
                   onClick={triggerEsp32ServoOn}
                   disabled={servoBusy}
@@ -400,6 +433,38 @@ export default function Dashboard() {
             >
               {servoFeedback.ok ? "Servo command sent." : servoFeedback.msg}
             </p>
+          ) : null}
+          {ESP32_BASE_URL && predictiveFeedback ? (
+            predictiveFeedback.ok ? (
+              <div className="mb-4 rounded-2xl border border-teal-100 bg-teal-50/70 px-4 py-3 text-sm text-teal-900">
+                <p className="font-semibold mb-2">Predictive trigger result</p>
+                <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                  <div>
+                    <span className="block text-xs uppercase tracking-wide text-teal-700/80">Prediction</span>
+                    <span className="font-semibold">{Number(predictiveFeedback.data?.prediction ?? 0).toFixed(4)}</span>
+                  </div>
+                  <div>
+                    <span className="block text-xs uppercase tracking-wide text-teal-700/80">Triggered</span>
+                    <span className="font-semibold">{predictiveFeedback.data?.wiper_triggered ? "Yes" : "No"}</span>
+                  </div>
+                  <div>
+                    <span className="block text-xs uppercase tracking-wide text-teal-700/80">Forecast date</span>
+                    <span className="font-semibold">{predictiveFeedback.data?.forecast_date || "—"}</span>
+                  </div>
+                  <div>
+                    <span className="block text-xs uppercase tracking-wide text-teal-700/80">ESP32 waterValue</span>
+                    <span className="font-semibold">{formatSensorValue(predictiveFeedback.data?.esp32_data?.waterValue)}</span>
+                  </div>
+                </div>
+                <div className="mt-3 text-teal-800/90">
+                  Threshold: {predictiveFeedback.data?.threshold ?? 50}. {predictiveFeedback.data?.esp32_error ? `ESP32 data note: ${predictiveFeedback.data.esp32_error}` : ""}
+                </div>
+              </div>
+            ) : (
+              <p className="text-sm mb-4 rounded-xl px-3 py-2 bg-rose-50 text-rose-800 border border-rose-100" role="status">
+                {predictiveFeedback.msg}
+              </p>
+            )
           ) : null}
           {!ESP32_BASE_URL ? (
             <p className="text-sm text-slate-500 rounded-2xl bg-slate-50 border border-slate-100 px-4 py-3 font-mono">
