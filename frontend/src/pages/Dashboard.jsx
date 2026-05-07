@@ -225,11 +225,12 @@ export default function Dashboard() {
     }
   }, []);
 
-  const runPredictiveTrigger = useCallback(async () => {
+  const runPredictiveTrigger = useCallback(async (allowTrigger = false) => {
     setPredictiveBusy(true);
     setPredictiveFeedback(null);
     try {
-      const res = await axios.get(`${API}/predictive-trigger`, { withCredentials: true });
+      const url = `${API}/predictive-trigger${allowTrigger ? "?trigger=true" : ""}`;
+      const res = await axios.get(url, { withCredentials: true });
       setPredictiveFeedback({ ok: true, data: res.data });
     } catch (e) {
       const raw = e?.response?.data?.detail;
@@ -394,37 +395,42 @@ export default function Dashboard() {
                 </p>
               </div>
             </div>
-            {ESP32_BASE_URL ? (
-              <div className="flex flex-wrap items-center gap-3 shrink-0">
+            <div className="flex flex-wrap items-center gap-3 shrink-0">
                 <button
                   type="button"
                   data-testid="predictive-trigger-btn"
-                  onClick={runPredictiveTrigger}
+                  onClick={() => {
+                    const espConnected = !!(ESP32_BASE_URL && !esp32Error && esp32Sensors !== null);
+                    runPredictiveTrigger(espConnected);
+                  }}
                   disabled={predictiveBusy}
                   className="inline-flex items-center gap-2 rounded-full bg-teal-600 text-white text-sm font-semibold px-5 py-2.5 shadow-sm hover:bg-teal-700 disabled:opacity-50 disabled:pointer-events-none transition-colors"
                 >
                   <Thermometer size={16} />
                   {predictiveBusy ? "Evaluating…" : "Predictive trigger"}
                 </button>
-                <button
-                  type="button"
-                  data-testid="esp32-servo-on-btn"
-                  onClick={triggerEsp32ServoOn}
-                  disabled={servoBusy}
-                  className="inline-flex items-center gap-2 rounded-full bg-indigo-600 text-white text-sm font-semibold px-5 py-2.5 shadow-sm hover:bg-indigo-700 disabled:opacity-50 disabled:pointer-events-none transition-colors"
-                >
-                  <Play size={16} fill="currentColor" className="opacity-90" />
-                  {servoBusy ? "Sending…" : "Turn servo on"}
-                </button>
-                <div className="flex items-center gap-2 text-sm">
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${esp32Error ? "bg-amber-500" : "bg-green-500 animate-pulse"}`} />
-                  <span className="text-slate-600">{esp32Error || "Connected"}</span>
-                  {esp32UpdatedAt && !esp32Error ? (
-                    <span className="text-slate-400">· {esp32UpdatedAt.toLocaleTimeString()}</span>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
+              {ESP32_BASE_URL ? (
+                <>
+                  <button
+                    type="button"
+                    data-testid="esp32-servo-on-btn"
+                    onClick={triggerEsp32ServoOn}
+                    disabled={servoBusy}
+                    className="inline-flex items-center gap-2 rounded-full bg-indigo-600 text-white text-sm font-semibold px-5 py-2.5 shadow-sm hover:bg-indigo-700 disabled:opacity-50 disabled:pointer-events-none transition-colors"
+                  >
+                    <Play size={16} fill="currentColor" className="opacity-90" />
+                    {servoBusy ? "Sending…" : "Turn servo on"}
+                  </button>
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${esp32Error ? "bg-amber-500" : "bg-green-500 animate-pulse"}`} />
+                    <span className="text-slate-600">{esp32Error || "Connected"}</span>
+                    {esp32UpdatedAt && !esp32Error ? (
+                      <span className="text-slate-400">· {esp32UpdatedAt.toLocaleTimeString()}</span>
+                    ) : null}
+                  </div>
+                </>
+              ) : null}
+            </div>
           </div>
           {ESP32_BASE_URL && servoFeedback ? (
             <p
@@ -434,7 +440,7 @@ export default function Dashboard() {
               {servoFeedback.ok ? "Servo command sent." : servoFeedback.msg}
             </p>
           ) : null}
-          {ESP32_BASE_URL && predictiveFeedback ? (
+          {predictiveFeedback ? (
             predictiveFeedback.ok ? (
               <div className="mb-4 rounded-2xl border border-teal-100 bg-teal-50/70 px-4 py-3 text-sm text-teal-900">
                 <p className="font-semibold mb-2">Predictive trigger result</p>
@@ -445,7 +451,7 @@ export default function Dashboard() {
                   </div>
                   <div>
                     <span className="block text-xs uppercase tracking-wide text-teal-700/80">Triggered</span>
-                    <span className="font-semibold">{predictiveFeedback.data?.wiper_triggered ? "Yes" : "No"}</span>
+                    <span className="font-semibold">{predictiveFeedback.data?.servo_triggered ? "Yes (sent)" : predictiveFeedback.data?.wiper_triggered ? "Yes (not sent)" : "No"}</span>
                   </div>
                   <div>
                     <span className="block text-xs uppercase tracking-wide text-teal-700/80">Forecast date</span>

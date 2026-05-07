@@ -854,7 +854,7 @@ async def esp32_servo_on_proxy(current_user: dict = Depends(get_current_user)):
 
 
 @api_router.get("/predictive-trigger")
-async def predictive_trigger(current_user: dict = Depends(get_current_user)):
+async def predictive_trigger(current_user: dict = Depends(get_current_user), trigger: bool = False):
     """Predict whether the wiper should run, then trigger ESP32 without blocking the response."""
     weather_task = asyncio.create_task(_fetch_open_meteo_daily_forecast())
 
@@ -879,8 +879,14 @@ async def predictive_trigger(current_user: dict = Depends(get_current_user)):
     prediction_value = prediction_payload["prediction"]
 
     wiper_triggered = prediction_value > 50
-    if wiper_triggered:
+
+    # Only actually send the servo trigger if the caller explicitly asked for it
+    # via the `trigger` query param. This lets clients request predictions
+    # without forcibly actuating hardware when the device isn't connected.
+    servo_triggered = False
+    if wiper_triggered and trigger:
         asyncio.create_task(_trigger_esp32_servo_background())
+        servo_triggered = True
 
     return {
         "prediction": prediction_value,
@@ -890,6 +896,7 @@ async def predictive_trigger(current_user: dict = Depends(get_current_user)):
         "wiper_triggered": wiper_triggered,
         "esp32_data": esp32_data,
         "esp32_error": esp32_error,
+        "servo_triggered": servo_triggered,
     }
 
 
