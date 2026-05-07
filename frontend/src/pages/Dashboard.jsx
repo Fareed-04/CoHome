@@ -275,9 +275,12 @@ export default function Dashboard() {
           setEsp32Error(null);
           setEsp32UpdatedAt(new Date());
         })
-        .catch(() => {
+        .catch((err) => {
           if (cancelled) return;
-          setEsp32Error("Cannot reach ESP32");
+          const reason = err?.message ? String(err.message) : "Network error";
+          setEsp32Error(
+            `Cannot reach ESP32 at ${url}. (${reason}) Same Wi‑Fi as the board? IP matches Serial Monitor? Router AP isolation off?`,
+          );
           setEsp32Sensors(null);
           setEsp32RawBody(null);
         });
@@ -385,7 +388,7 @@ export default function Dashboard() {
                 </button>
                 <div className="flex items-center gap-2 text-sm">
                   <span className={`w-2 h-2 rounded-full shrink-0 ${esp32Error ? "bg-amber-500" : "bg-green-500 animate-pulse"}`} />
-                  <span className="text-slate-600">{esp32Error || "Connected"}</span>
+                  <span className="text-slate-600">{esp32Error ? "Offline" : "Connected"}</span>
                   {esp32UpdatedAt && !esp32Error ? (
                     <span className="text-slate-400">· {esp32UpdatedAt.toLocaleTimeString()}</span>
                   ) : null}
